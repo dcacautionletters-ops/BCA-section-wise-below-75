@@ -8,7 +8,7 @@ import re
 # --- UI CONFIG ---
 st.set_page_config(page_title="Department of Computer Applications", layout="wide")
 
-# --- CSS STYLING (UNCHANGED) ---
+# --- CSS STYLING ---
 st.markdown("""
     <style>
     @keyframes fadeIn { 0% { opacity: 0; transform: translateY(10px); } 100% { opacity: 1; transform: translateY(0); } }
@@ -22,7 +22,7 @@ st.markdown("""
 
 st.markdown('<p class="main-title">🏛️ Department of Computer Applications</p>', unsafe_allow_html=True)
 st.markdown('<p class="welcome-note">Welcome to Presidency.</p>', unsafe_allow_html=True)
-st.markdown('<p class="magic-text">Experience the Section-Wise Magic.</p>', unsafe_allow_html=True)
+st.markdown('<p class="magic-text">General + Section-Wise Magic Combined.</p>', unsafe_allow_html=True)
 st.markdown('<p class="magician-icon">🧙‍♂️</p>', unsafe_allow_html=True)
 
 if 'magic_unlocked' not in st.session_state:
@@ -71,9 +71,20 @@ if st.session_state['magic_unlocked'] is True:
                     except: pass
 
     def extract_section(batch_str):
-        # Logic to find "A", "B", "C" etc at the end of strings like "BCA 2024-2027-A" or "MCA 2025 B"
+        # Extracts A, B, C etc. from the end of the batch string
         match = re.search(r'[- ]([A-Z])$', str(batch_str).strip())
-        return match.group(1) if match else "General"
+        return match.group(1) if match else "Gen"
+
+    def generate_excel_grid(data_df, cols):
+        if data_df.empty: return None
+        grid = data_df.pivot_table(index=[cols['roll'], cols['name'], cols['batch']],
+                                   columns=cols['subject'], values=cols['attendance'], sort=False).reset_index()
+        grid.insert(0, 'Sl No.', range(1, len(grid) + 1))
+        sub_cols = grid.columns[4:]
+        theory = [c for c in sub_cols if "LAB" not in str(c).upper()]
+        grid['Theory Avg'] = grid[theory].mean(axis=1).round(2)
+        grid['Final Avg'] = grid[sub_cols].mean(axis=1).round(2)
+        return grid
 
     def run_batch_logic(df, batches, writer, cols):
         batch_summaries = []
@@ -86,41 +97,37 @@ if st.session_state['magic_unlocked'] is True:
             
             if batch_df.empty: continue
 
-            # Create Section column
+            # --- 1. GENERATE GENERAL REPORT (ALL SECTIONS COMBINED) ---
+            gen_shortage = batch_df[batch_df[cols['attendance']] < 75].copy()
+            if not gen_shortage.empty:
+                gen_grid = generate_excel_grid(gen_shortage, cols)
+                sheet_name = f"{group} ALL"[:31]
+                gen_grid.to_excel(writer, sheet_name=sheet_name, index=False)
+                apply_styles(writer.sheets[sheet_name])
+                with st.expander(f"👁️ {group} - GENERAL REPORT (Total Count: {len(gen_grid)})"):
+                    st.dataframe(gen_grid, hide_index=True)
+
+            # --- 2. GENERATE INDIVIDUAL SECTION REPORTS ---
             batch_df['Section'] = batch_df[cols['batch']].apply(extract_section)
             sections = sorted(batch_df['Section'].unique())
 
             for sec in sections:
                 sec_df = batch_df[batch_df['Section'] == sec]
-                shortage = sec_df[sec_df[cols['attendance']] < 75].copy()
+                sec_shortage = sec_df[sec_df[cols['attendance']] < 75].copy()
                 
-                if not shortage.empty:
-                    grid = shortage.pivot_table(index=[cols['roll'], cols['name'], cols['batch']],
-                                               columns=cols['subject'], values=cols['attendance'], sort=False).reset_index()
-                    grid.insert(0, 'Sl No.', range(1, len(grid) + 1))
-                    
-                    # Calculate Averages
-                    sub_cols = grid.columns[4:]
-                    theory = [c for c in sub_cols if "LAB" not in str(c).upper()]
-                    grid['Theory Avg'] = grid[theory].mean(axis=1).round(2)
-                    grid['Final Avg'] = grid[sub_cols].mean(axis=1).round(2)
-
-                    # --- INDIVIDUAL SHEET PER SECTION ---
+                if not sec_shortage.empty:
+                    sec_grid = generate_excel_grid(sec_shortage, cols)
                     sheet_name = f"{group} {sec}"[:31]
-                    grid.to_excel(writer, sheet_name=sheet_name, index=False)
+                    sec_grid.to_excel(writer, sheet_name=sheet_name, index=False)
                     apply_styles(writer.sheets[sheet_name])
-                    
-                    with st.expander(f"👁️ {group} Section {sec} (<75%)"):
-                        st.dataframe(grid, hide_index=True)
-                    
-                    batch_summaries.append({'Batch': group, 'Section': sec, 'Count': len(grid)})
+                    batch_summaries.append({'Batch': group, 'Section': sec, 'Count': len(sec_grid)})
+        
         return batch_summaries
 
     st.divider()
     uploaded_file = st.file_uploader("📂 Upload Attendance Excel", type=["xlsx"])
 
     if uploaded_file:
-        # Autodetect Header Row
         raw_head = pd.read_excel(uploaded_file, header=None).head(10)
         h_row = 0
         for i, row in raw_head.iterrows():
@@ -129,7 +136,6 @@ if st.session_state['magic_unlocked'] is True:
         
         df = pd.read_excel(uploaded_file, header=h_row)
         
-        # Dynamic Column Discovery
         c_map = {}
         for c in df.columns:
             cs = str(c).strip()
@@ -143,16 +149,16 @@ if st.session_state['magic_unlocked'] is True:
         
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            t1, t2, t3 = st.tabs(["🎓 BCA", "📜 MCA", "📊 Summary"])
+            t1, t2, t3 = st.tabs(["🎓 BCA Analytics", "📜 MCA Analytics", "📊 Master Summary"])
             with t1: bca_data = run_batch_logic(df, BCA_BATCHES, writer, c_map)
             with t2: mca_data = run_batch_logic(df, MCA_BATCHES, writer, c_map)
             with t3:
                 summary_df = pd.DataFrame(bca_data + mca_data)
                 if not summary_df.empty:
-                    st.plotly_chart(px.bar(summary_df, x='Batch', y='Count', color='Section', barmode='group'))
+                    st.plotly_chart(px.bar(summary_df, x='Batch', y='Count', color='Section', barmode='group', title="Shortage per Section"))
                     summary_df.to_excel(writer, sheet_name='MASTER SUMMARY', index=False)
                     apply_styles(writer.sheets['MASTER SUMMARY'], is_summary=True)
 
-        st.download_button("📥 Download Section-Wise Report", output.getvalue(), "Sectionwise_Report.xlsx")
+        st.download_button("📥 Download Final Magic Report", output.getvalue(), "Full_Attendance_Report.xlsx")
 
 st.markdown('<div class="footer">© VMS</div>', unsafe_allow_html=True)
