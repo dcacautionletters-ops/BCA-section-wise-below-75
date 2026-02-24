@@ -87,47 +87,65 @@ if st.session_state['magic_unlocked'] is True:
                             cell.fill = warn_fill; cell.font = black_font
                     except: pass
 
+    def create_excel_sheet(data_df, writer, sheet_name, cols):
+        if data_df.empty: return
+        grid = data_df.pivot_table(index=[cols['roll'], cols['name'], cols['batch']],
+                                    columns=cols['subject'], values=cols['attendance'], sort=False).reset_index()
+        grid.insert(0, 'Sl No.', range(1, len(grid) + 1))
+        sub_cols = grid.columns[4:]
+        grid['Theory Avg'] = grid[[c for c in sub_cols if "LAB" not in str(c).upper()]].mean(axis=1).round(2)
+        grid['Final Avg'] = grid[sub_cols].mean(axis=1).round(2)
+        
+        final_sheet_name = sheet_name[:31]
+        grid.to_excel(writer, sheet_name=final_sheet_name, index=False)
+        apply_styles(writer.sheets[final_sheet_name])
+        return grid
+
     def run_batch_logic(df, batches, writer, cols):
         batch_summaries = []
         for group in batches:
             course, year = group.split()
-            # Dynamic filtering based on Batch string
             mask = (df[cols['batch']].astype(str).str.contains(course, case=False, na=False)) & \
                    (df[cols['batch']].astype(str).str.contains(year, na=False))
             batch_df = df[mask].copy()
             batch_df = batch_df[~batch_df[cols['subject']].astype(str).str.contains('|'.join(BLACKLIST), case=False, na=False)]
             
-            # Extract Sections from the Batch column (e.g., "BCA 2024-2027-A")
-            batch_df['Section_Extracted'] = batch_df[cols['batch']].astype(str).apply(lambda x: x.split('-')[-1].strip() if '-' in x else "General")
-            sections = batch_df['Section_Extracted'].unique()
+            if batch_df.empty: continue
+
+            # 1. CREATE GENERAL BATCH REPORT (FULL)
+            limit = THRESHOLDS[0]
+            gen_shortage = batch_df[batch_df[cols['attendance']] < limit].copy()
+            if not gen_shortage.empty:
+                create_excel_sheet(gen_shortage, writer, f"{group} GENERAL", cols)
+                with st.expander(f"👁️ {group} - FULL BATCH (Below {limit}%)"):
+                    st.info(f"Showing all sections for {group}")
+                    # No need to display huge dataframe here if sections are shown below, 
+                    # but kept for consistency
+                
+            # 2. CREATE SECTION-WISE REPORTS
+            batch_df['Section_Extracted'] = batch_df[cols['batch']].astype(str).apply(
+                lambda x: x.split('-')[-1].strip() if '-' in x else "Gen"
+            )
+            sections = sorted(batch_df['Section_Extracted'].unique())
             
             for section in sections:
                 sec_df = batch_df[batch_df['Section_Extracted'] == section]
-                for limit in THRESHOLDS:
-                    shortage_df = sec_df[sec_df[cols['attendance']] < limit].copy()
-                    if not shortage_df.empty:
-                        grid = shortage_df.pivot_table(index=[cols['roll'], cols['name'], cols['batch']],
-                                                        columns=cols['subject'], values=cols['attendance'], sort=False).reset_index()
-                        grid.insert(0, 'Sl No.', range(1, len(grid) + 1))
-                        sub_cols = grid.columns[4:]
-                        grid['Theory Avg'] = grid[[c for c in sub_cols if "LAB" not in str(c).upper()]].mean(axis=1).round(2)
-                        grid['Final Avg'] = grid[sub_cols].mean(axis=1).round(2)
-                        
-                        sheet_name = f"{group} Sec {section}"[:31]
-                        grid.to_excel(writer, sheet_name=sheet_name, index=False)
-                        apply_styles(writer.sheets[sheet_name])
-                        
-                        with st.expander(f"👁️ {group} - Section {section} (Below {limit}%)"):
-                            st.dataframe(grid, hide_index=True, use_container_width=True)
-                        
-                        batch_summaries.append({'Batch': group, 'Section': section, 'Count': len(grid)})
+                sec_shortage = sec_df[sec_df[cols['attendance']] < limit].copy()
+                
+                if not sec_shortage.empty:
+                    create_excel_sheet(sec_shortage, writer, f"{group} Sec {section}", cols)
+                    with st.expander(f"👁️ {group} - Section {section} (Below {limit}%)"):
+                        st.dataframe(sec_shortage.pivot_table(index=[cols['roll'], cols['name']], 
+                                     columns=cols['subject'], values=cols['attendance']).reset_index(), 
+                                     hide_index=True, use_container_width=True)
+                    
+                    batch_summaries.append({'Batch': group, 'Section': section, 'Count': len(sec_shortage[cols['roll']].unique())})
         return batch_summaries
 
     st.divider()
     uploaded_file = st.file_uploader("📂 Upload Attendance Excel", type=["xlsx"])
 
     if uploaded_file:
-        # --- AUTO-DETECT HEADER LOGIC ---
         raw_df = pd.read_excel(uploaded_file, header=None).head(10)
         header_row = 0
         for i, row in raw_df.iterrows():
@@ -138,7 +156,6 @@ if st.session_state['magic_unlocked'] is True:
         
         df = pd.read_excel(uploaded_file, header=header_row)
         
-        # --- DYNAMIC COLUMN MAPPING ---
         col_map = {}
         for c in df.columns:
             c_str = str(c).strip()
@@ -159,11 +176,11 @@ if st.session_state['magic_unlocked'] is True:
                 summary_df = pd.DataFrame(bca_data + mca_data)
                 st.subheader("📈 Section-wise Shortage (<75%)")
                 if not summary_df.empty:
-                    fig = px.bar(summary_df, x='Batch', y='Count', color='Section', barmode='group')
+                    fig = px.bar(summary_df, x='Batch', y='Count', color='Section', barmode='group', text_auto=True)
                     st.plotly_chart(fig, use_container_width=True)
                     summary_df.to_excel(writer, sheet_name='MASTER SUMMARY', index=False)
                     apply_styles(writer.sheets['MASTER SUMMARY'], is_summary=True)
 
-        st.download_button(label="📥 Download Magic Report", data=output.getvalue(), file_name="BCA_Sectionwise_Report.xlsx")
+        st.download_button(label="📥 Download Magic Report", data=output.getvalue(), file_name="DCA_Sectionwise_Attendance_Report.xlsx")
 
 st.markdown('<div class="footer">© VMS</div>', unsafe_allow_html=True)
