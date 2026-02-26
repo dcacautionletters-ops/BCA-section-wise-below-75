@@ -73,6 +73,7 @@ def apply_styles(ws, threshold, is_summary=False):
 def process_grid(data_df, cols, batch_subjects, threshold):
     if data_df.empty: return None, None
     data_df[cols['attendance']] = pd.to_numeric(data_df[cols['attendance']], errors='coerce')
+    
     full_grid = data_df.pivot_table(index=[cols['roll'], cols['name'], cols['batch'], cols['sem']],
                                     columns=cols['subject'], values=cols['attendance'], sort=False).reset_index()
     
@@ -101,13 +102,19 @@ def process_grid(data_df, cols, batch_subjects, threshold):
 uploaded_file = st.file_uploader("📂 Upload Universal Attendance File", type=["xlsx"])
 
 if uploaded_file:
-    df_raw = pd.read_excel(uploaded_file, header=None).head(15)
+    # AUTO-DETECTION OF HEADER ROW
+    df_preview = pd.read_excel(uploaded_file, header=None).head(15)
     h_row = 0
-    for i, row in df_raw.iterrows():
-        if any("ROLL NO" in str(x).upper() for x in row.values): h_row = i; break
+    for i, row in df_preview.iterrows():
+        if any("ROLL NO" in str(x).upper() for x in row.values):
+            h_row = i
+            break
     
+    # Reload with correct header
     df = pd.read_excel(uploaded_file, header=h_row)
-    c_map = {'sem': df.columns[5]} 
+    
+    # Map Columns
+    c_map = {'sem': df.columns[5]} # Column F
     for c in df.columns:
         cs = str(c).strip()
         if "Roll No" in cs: c_map['roll'] = c
@@ -179,11 +186,9 @@ if uploaded_file:
                 c1, c2 = st.columns(2)
                 with c1: st.plotly_chart(px.bar(sum_df, x='Section', y='Count', color='Section', template="plotly_dark"), use_container_width=True)
                 with c2:
-                    # SAFETY FIX: Ensure index is reset properly and dataframe is not empty
                     if not subject_impact.empty and subject_impact.sum() > 0:
                         impact_df = subject_impact.reset_index()
                         impact_df.columns = ['Subject', 'Students']
-                        # Final check for Plotly
                         if not impact_df.empty:
                             st.plotly_chart(px.pie(impact_df.head(10), names='Subject', values='Students', hole=0.4, title="Top Subject Impact", template="plotly_dark"), use_container_width=True)
                 sum_df.to_excel(writer, sheet_name='SUMMARY', index=False)
@@ -191,5 +196,3 @@ if uploaded_file:
                 st.success(f"No shortages found for {dept_choice}.")
 
     st.download_button(f"📥 Download {dept_choice} Report", output.getvalue(), f"VMS_{dept_choice}_Report.xlsx", use_container_width=True)
-
-st.markdown('<div class="footer">Universal VMS v10.1 | Safety Link Active</div>', unsafe_allow_html=True)
