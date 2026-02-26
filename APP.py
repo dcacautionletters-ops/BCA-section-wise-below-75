@@ -45,6 +45,7 @@ if not st.session_state.authenticated:
     st.stop()
 
 # --- 3. CORE LOGIC ---
+# Updated Blacklist: Included SS ATOM
 BLACKLIST = ["BADMINTON", "BASKETBALL", "CROSS FITNESS", "SOFT SKILL", "SWIMMING", "ZUMBA", "FREESLOT", "TABLE TENNIS", "SS ATOM", "FREE SLOT"]
 ATT_COL_NAME = "Attended Hours with Approved Leave Percentage"
 
@@ -70,7 +71,7 @@ def apply_styles(ws, is_summary=False):
     for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
         for cell in row:
             cell.border, cell.alignment = border, Alignment(horizontal="center")
-            if not is_summary and cell.column > 5: # Shifted for Sem column
+            if not is_summary and cell.column > 5: # Values start after index columns
                 try:
                     val = float(cell.value)
                     if val < 70: cell.fill, cell.font = crit_fill, Font(bold=True, color="FFFFFF")
@@ -81,11 +82,10 @@ def process_grid(data_df, cols, batch_subjects):
     if data_df.empty: return None, None
     data_df[cols['attendance']] = pd.to_numeric(data_df[cols['attendance']], errors='coerce')
     
-    # Pivot logic
+    # Pivot logic with Semester inclusion
     full_grid = data_df.pivot_table(index=[cols['roll'], cols['name'], cols['batch'], cols['sem']],
                                     columns=cols['subject'], values=cols['attendance'], sort=False).reset_index()
     
-    # Subject Isolation
     for sub in batch_subjects:
         if sub not in full_grid.columns: full_grid[sub] = None
         full_grid[sub] = pd.to_numeric(full_grid[sub], errors='coerce')
@@ -94,7 +94,7 @@ def process_grid(data_df, cols, batch_subjects):
     full_grid['Theory Avg'] = full_grid[theory_cols].mean(axis=1).round(2)
     full_grid['Final Avg'] = full_grid[batch_subjects].mean(axis=1).round(2)
     
-    # Threshold Masking
+    # Logic: Show shortage if ANY subject in this batch is below threshold
     mask = (full_grid[batch_subjects] < threshold).any(axis=1)
     shortage_grid = full_grid[mask].copy()
     
@@ -102,6 +102,7 @@ def process_grid(data_df, cols, batch_subjects):
     
     sub_counts = (shortage_grid[batch_subjects] < threshold).sum()
     for sub in batch_subjects:
+        # Keep values below threshold, clear others for clarity in reports
         shortage_grid[sub] = shortage_grid[sub].apply(lambda x: x if (pd.notnull(x) and x < threshold) else "")
     
     shortage_grid.insert(0, 'Sl No.', range(1, len(shortage_grid) + 1))
@@ -118,8 +119,8 @@ if uploaded_file:
         if any("ROLL NO" in str(x).upper() for x in row.values): h_row = i; break
     
     df = pd.read_excel(uploaded_file, header=h_row)
-    # Mapping
-    c_map = {'sem': df.columns[5]} # Column F (Semester)
+    # Mapping Column F for Semester
+    c_map = {'sem': df.columns[5]} 
     for c in df.columns:
         cs = str(c).strip()
         if "Roll No" in cs: c_map['roll'] = c
@@ -145,10 +146,10 @@ if uploaded_file:
             with tabs[d_idx+1]:
                 for series in series_list:
                     s_df = d_df[d_df[c_map['batch']].astype(str).str.contains(series)]
-                    # Subject Isolation per Series (MCA 2024 vs 2025)
+                    # Batch-Specific Subject Isolation (SS ATOM now excluded)
                     s_subs = sorted([s for s in s_df[c_map['subject']].unique() if not any(b in str(s).upper() for b in BLACKLIST)])
                     
-                    # 1. General Series Eye
+                    # Series General Eye
                     gen_grid, _ = process_grid(s_df, c_map, s_subs)
                     if gen_grid is not None:
                         with st.expander(f"👁️ {series} GENERAL SUMMARY"):
@@ -157,7 +158,7 @@ if uploaded_file:
                         gen_grid.to_excel(writer, sheet_name=sn, index=False)
                         apply_styles(writer.sheets[sn])
                     
-                    # 2. Section Eyes
+                    # Section Eyes
                     sections = sorted(s_df[c_map['batch']].unique())
                     for sec in sections:
                         sec_df = s_df[s_df[c_map['batch']] == sec]
@@ -183,16 +184,13 @@ if uploaded_file:
                 with c1:
                     st.plotly_chart(px.bar(sum_df, x='Section', y='Count', color='Section', template="plotly_dark", title="Section-wise Breakdown"), use_container_width=True)
                 with c2:
-                    # FIX: Value Check for Pie Chart
                     if not subject_impact.empty and subject_impact.sum() > 0:
                         impact_df = subject_impact.reset_index()
                         impact_df.columns = ['Subject', 'Students']
                         st.plotly_chart(px.pie(impact_df.head(10), names='Subject', values='Students', hole=0.4, title="Top Subject Impact", template="plotly_dark"), use_container_width=True)
-                    else:
-                        st.info("No subject-wise shortages to display in Pie Chart.")
                 
                 sum_df.to_excel(writer, sheet_name='SUMMARY', index=False)
             else:
-                st.success("No shortages found at this threshold.")
+                st.success("No shortages found.")
 
     st.download_button("📥 Download Universal Report", output.getvalue(), "VMS_Global_Report.xlsx", use_container_width=True)
