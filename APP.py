@@ -19,11 +19,7 @@ st.markdown("""
     .welcome-note { 
         background: linear-gradient(to right, #00d2ff, #92fe9d); 
         -webkit-background-clip: text; -webkit-text-fill-color: transparent; 
-        font-size: 44px !important; font-weight: 800; text-align: center; margin-bottom: 20px;
-    }
-    .search-container {
-        background: rgba(255, 255, 255, 0.07); padding: 30px; border-radius: 20px;
-        border: 1px solid rgba(146, 254, 157, 0.3); margin-bottom: 25px;
+        font-size: 40px !important; font-weight: 800; text-align: center; margin-bottom: 20px;
     }
     .glass-metric {
         background: rgba(255, 255, 255, 0.05); backdrop-filter: blur(10px);
@@ -39,17 +35,16 @@ st.markdown("""
 if 'authenticated' not in st.session_state: st.session_state.authenticated = False
 
 if not st.session_state.authenticated:
-    st.markdown('<p class="welcome-note">VMS Neural Reporting Link</p>', unsafe_allow_html=True)
+    st.markdown('<p class="welcome-note">Institutional Reporting Link</p>', unsafe_allow_html=True)
     col1, col2, col3 = st.columns([1, 1.2, 1])
     with col2:
-        u = st.text_input("User ID")
         p = st.text_input("Access Key", type="password")
         if st.button("Unlock Dashboard", use_container_width=True):
             if p == MASTER_PASSWORD: st.session_state.authenticated = True; st.rerun()
-            else: st.error("Access Key Invalid")
+            else: st.error("Invalid Key")
     st.stop()
 
-# --- 3. UNIVERSAL LOGIC ---
+# --- 3. RECTIFIED LOGIC ---
 BLACKLIST = ["BADMINTON", "BASKETBALL", "CROSS FITNESS", "SOFT SKILL", "SWIMMING", "ZUMBA", "FREESLOT", "TABLE TENNIS", "SS ATOM", "FREE SLOT"]
 ATT_COL_NAME = "Attended Hours with Approved Leave Percentage"
 
@@ -66,21 +61,32 @@ def apply_styles(ws):
             cell.border, cell.alignment = border, Alignment(horizontal="center")
 
 def get_pivot_data(df, cols, subjects):
+    # Step 1: Force numeric conversion BEFORE pivoting to solve the TypeError
+    df[cols['attendance']] = pd.to_numeric(df[cols['attendance']], errors='coerce')
+    
     grid = df.pivot_table(index=[cols['roll'], cols['name'], cols['batch']],
                           columns=cols['subject'], values=cols['attendance'], sort=False).reset_index()
+    
     for s in subjects:
         if s not in grid.columns: grid[s] = None
+    
+    # Step 2: Ensure pivoted columns are also numeric
+    for col in subjects:
+        grid[col] = pd.to_numeric(grid[col], errors='coerce')
+        
     theory = [c for c in subjects if not any(x in str(c).upper() for x in ["LAB", "PRACTICAL", "WORKSHOP"])]
-    grid['Theory Avg'] = grid[theory].mean(axis=1).round(2)
-    grid['Final Avg'] = grid[subjects].mean(axis=1).round(2)
+    
+    # Calculation with safety rounding
+    grid['Theory Avg'] = grid[theory].mean(axis=1, skipna=True).astype(float).round(2)
+    grid['Final Avg'] = grid[subjects].mean(axis=1, skipna=True).astype(float).round(2)
     return grid
 
 # --- 4. DASHBOARD ENGINE ---
-st.markdown('<p class="welcome-note">Institutional Analytics Hub</p>', unsafe_allow_html=True)
-file = st.file_uploader("📂 Drop Departmental Attendance Excel Here", type=["xlsx"])
+st.markdown('<p class="welcome-note">Multi-Department Analytics Hub</p>', unsafe_allow_html=True)
+file = st.file_uploader("📂 Upload Attendance Excel", type=["xlsx"])
 
 if file:
-    # 4.1 Data Ingestion
+    # Header Detection
     raw = pd.read_excel(file, header=None).head(15)
     h_idx = 0
     for i, row in raw.iterrows():
@@ -96,17 +102,15 @@ if file:
         elif any(x in cs for x in ["Course", "Subject"]): c_map['subject'] = c
         elif ATT_COL_NAME in cs: c_map['attendance'] = c
 
-    df[c_map['attendance']] = pd.to_numeric(df[c_map['attendance']], errors='coerce')
     df['Dept'] = df[c_map['batch']].astype(str).apply(lambda x: x.split()[0].upper())
     
     output = io.BytesIO()
     all_grids = []
     summaries = []
 
-    # 4.2 Excel and Data Processing
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        # STEP 1: Always create a visible sheet first to prevent IndexError
-        pd.DataFrame({"Status": ["File Generated Successfully"], "Time": [time.ctime()]}).to_excel(writer, sheet_name="System_Logs", index=False)
+        # Prevent IndexError by creating status sheet immediately
+        pd.DataFrame({"Status": ["System Ready"], "Timestamp": [time.ctime()]}).to_excel(writer, sheet_name="Audit_Log", index=False)
         
         depts = sorted(df['Dept'].unique())
         for d in depts:
@@ -119,11 +123,10 @@ if file:
                 grid = get_pivot_data(s_df, c_map, subs)
                 all_grids.append(grid)
                 
-                # Sheet Logic
                 mask = (grid[subs] < 75).any(axis=1)
                 shortage = grid[mask].copy()
                 if not shortage.empty:
-                    for s in subs: shortage[s] = shortage[s].apply(lambda x: x if (pd.notnull(x) and x < 75) else "")
+                    for s in subs: shortage[s] = shortage[s].apply(lambda x: x if (pd.notnull(x) and x != "" and float(x or 0) < 75) else "")
                     shortage.insert(0, 'Sl No.', range(1, len(shortage) + 1))
                     sn = str(sec)[:31]
                     shortage.to_excel(writer, sheet_name=sn, index=False)
@@ -134,42 +137,35 @@ if file:
             pd.DataFrame(summaries).to_excel(writer, sheet_name="MASTER_SUMMARY", index=False)
             apply_styles(writer.sheets["MASTER_SUMMARY"])
 
-    # 4.3 UI Presentation
+    # --- UI DISPLAY ---
     tab_search, tab_visuals = st.tabs(["🔍 GLOBAL SEARCH HUB", "📊 PERFORMANCE STATS"])
 
     with tab_search:
-        st.markdown('<div class="search-container">', unsafe_allow_html=True)
-        query = st.text_input("🕵️ Find Student (Name or Roll No)", placeholder="Type to scan all departments...")
-        st.markdown('</div>', unsafe_allow_html=True)
-        
+        query = st.text_input("🕵️ Find Student (Name or Roll No)")
         if query and all_grids:
             master_df = pd.concat(all_grids, ignore_index=True)
             res = master_df[(master_df[c_map['name']].astype(str).str.contains(query, case=False)) | 
                             (master_df[c_map['roll']].astype(str).str.contains(query, case=False))]
-            if not res.empty:
-                st.dataframe(res, use_container_width=True, hide_index=True)
-            else:
-                st.info("No matching student records found in this dataset.")
+            st.dataframe(res, use_container_width=True, hide_index=True)
 
     with tab_visuals:
         if summaries:
             sum_df = pd.DataFrame(summaries)
-            # DYNAMIC COLOR BAR CHART
+            # Dynamic Vibrant Colors
             fig = px.bar(sum_df, x='Section', y='Count', color='Dept',
-                         title="Shortage Distribution by Department",
-                         color_discrete_sequence=px.colors.qualitative.Pastel,
-                         template="plotly_dark", barmode='group')
+                         title="Shortage Distribution", 
+                         color_discrete_sequence=px.colors.qualitative.Alphabet,
+                         template="plotly_dark")
             st.plotly_chart(fig, use_container_width=True)
             
-            # Glass Cards
             cols = st.columns(len(depts))
             for i, d in enumerate(depts):
                 val = sum_df[sum_df['Dept'] == d]['Count'].sum()
                 with cols[i]:
-                    st.markdown(f'<div class="glass-metric"><small>{d}</small><br><span class="metric-value">{val}</span><br><small>Shortages</small></div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="glass-metric"><small>{d}</small><br><span class="metric-value">{val}</span></div>', unsafe_allow_html=True)
         else:
-            st.success("🌟 System Check: 100% Attendance Compliance. No shortages found.")
+            st.success("✅ No shortages found.")
 
-    st.download_button("📥 Download Universal Report", output.getvalue(), "VMS_Institutional_Report.xlsx", use_container_width=True)
+    st.download_button("📥 Download Excel Report", output.getvalue(), "VMS_Institutional_Report.xlsx", use_container_width=True)
 
-st.markdown('<div class="footer">Universal VMS Neural Link v5.0 | Secure Processing Active</div>', unsafe_allow_html=True)
+st.markdown('<div class="footer">Universal VMS Neural Link v6.0 | Error-Free Mode Active</div>', unsafe_allow_html=True)
