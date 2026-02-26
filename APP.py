@@ -83,8 +83,8 @@ def apply_styles(ws, is_summary=False):
     thin = Side(style='thin', color="4D4D4D")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
     header_fill = PatternFill(start_color="2C3E50", end_color="2C3E50", fill_type="solid")
-    crit_fill = PatternFill(start_color="C0392B", end_color="C0392B", fill_type="solid") 
-    warn_fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid") 
+    crit_fill = PatternFill(start_color="C0392B", end_color="C0392B", fill_type="solid") # Red for < 70
+    warn_fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid") # Pale Green for 70-74.99
     
     for col in range(1, ws.max_column + 1):
         cell = ws.cell(row=1, column=col)
@@ -96,13 +96,14 @@ def apply_styles(ws, is_summary=False):
         for cell in row:
             cell.border = border
             cell.alignment = Alignment(horizontal="center")
+            # Style values based on thresholds
             if not is_summary and cell.column > 4:
                 try:
                     if cell.value != "" and cell.value is not None:
                         val = float(cell.value)
-                        if val < threshold:
+                        if val < 70:
                             cell.fill, cell.font = crit_fill, Font(bold=True, color="FFFFFF")
-                        else:
+                        elif 70 <= val < threshold:
                             cell.fill, cell.font = warn_fill, Font(bold=True, color="000000")
                 except: pass
 
@@ -172,25 +173,36 @@ if uploaded_file:
         for d_idx, dept in enumerate(all_depts):
             d_df = df[df['Dept_Prefix'] == dept]
             core_subs = sorted([s for s in d_df[c_map['subject']].unique() if not any(b in str(s).upper() for b in BLACKLIST)])
-            sections = sorted(d_df[c_map['batch']].unique())
+            
+            # Identify "Series" (e.g., MCA 2024, MCA 2025)
+            series_list = sorted(d_df[c_map['batch']].astype(str).apply(lambda x: ' '.join(x.split()[:2])).unique())
             
             with tabs[d_idx+1]:
-                for sec in sections:
-                    sec_df = d_df[d_df[c_map['batch']] == sec]
-                    grid, sub_counts = process_grid(sec_df, c_map, core_subs)
+                for series in series_list:
+                    series_df = d_df[d_df[c_map['batch']].astype(str).str.contains(series)]
                     
-                    if grid is not None:
-                        # Eye Symbol Expander for Data
-                        with st.expander(f"👁️ {sec} processed: {len(grid)} shortages"):
-                            st.dataframe(grid, use_container_width=True, hide_index=True)
+                    # 1. GENERATE GENERAL SERIES SHEET
+                    series_grid, _ = process_grid(series_df, c_map, core_subs)
+                    if series_grid is not None:
+                        gen_sheet_name = f"{series} GENERAL"[:31]
+                        series_grid.to_excel(writer, sheet_name=gen_sheet_name, index=False)
+                        apply_styles(writer.sheets[gen_sheet_name])
+                        with st.expander(f"👁️ {series} GENERAL: {len(series_grid)} total shortages"):
+                            st.dataframe(series_grid, use_container_width=True, hide_index=True)
+
+                    # 2. GENERATE SECTION-WISE SHEETS
+                    sections = sorted(series_df[c_map['batch']].unique())
+                    for sec in sections:
+                        sec_df = series_df[series_df[c_map['batch']] == sec]
+                        grid, sub_counts = process_grid(sec_df, c_map, core_subs)
                         
-                        sh_name = str(sec).replace("/", "-")[:31]
-                        grid.to_excel(writer, sheet_name=sh_name, index=False)
-                        apply_styles(writer.sheets[sh_name])
-                        master_summaries.append({'Section': sec, 'Count': len(grid), 'Dept': dept})
-                        subject_impact_data = subject_impact_data.add(sub_counts, fill_value=0)
-                    else:
-                        st.write(f"✅ {sec}: 0 shortages detected.")
+                        if grid is not None:
+                            sh_name = str(sec).replace("/", "-")[:31]
+                            grid.to_excel(writer, sheet_name=sh_name, index=False)
+                            apply_styles(writer.sheets[sh_name])
+                            master_summaries.append({'Section': sec, 'Count': len(grid), 'Dept': dept})
+                            subject_impact_data = subject_impact_data.add(sub_counts, fill_value=0)
+                            st.write(f"✅ {sec} processed individually.")
 
         with tabs[0]:
             if master_summaries:
@@ -205,9 +217,8 @@ if uploaded_file:
                             <div style="color:#64748b; font-size:11px;">Shortage Detected</div>
                         </div>""", unsafe_allow_html=True)
 
-                # Colorful Chart
                 fig1 = px.bar(summary_df, x='Section', y='Count', 
-                             color='Section',  # Different color for every section
+                             color='Section', 
                              title="Shortage breakdown by Section", 
                              template="plotly_dark",
                              color_discrete_sequence=px.colors.qualitative.Prism)
