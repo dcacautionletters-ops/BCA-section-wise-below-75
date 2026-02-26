@@ -45,7 +45,6 @@ if not st.session_state.authenticated:
     st.stop()
 
 # --- 3. CORE LOGIC ---
-# Updated Blacklist: Included SS ATOM
 BLACKLIST = ["BADMINTON", "BASKETBALL", "CROSS FITNESS", "SOFT SKILL", "SWIMMING", "ZUMBA", "FREESLOT", "TABLE TENNIS", "SS ATOM", "FREE SLOT"]
 ATT_COL_NAME = "Attended Hours with Approved Leave Percentage"
 
@@ -71,7 +70,7 @@ def apply_styles(ws, is_summary=False):
     for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
         for cell in row:
             cell.border, cell.alignment = border, Alignment(horizontal="center")
-            if not is_summary and cell.column > 5: # Values start after index columns
+            if not is_summary and cell.column > 5:
                 try:
                     val = float(cell.value)
                     if val < 70: cell.fill, cell.font = crit_fill, Font(bold=True, color="FFFFFF")
@@ -82,31 +81,38 @@ def process_grid(data_df, cols, batch_subjects):
     if data_df.empty: return None, None
     data_df[cols['attendance']] = pd.to_numeric(data_df[cols['attendance']], errors='coerce')
     
-    # Pivot logic with Semester inclusion
+    # 1. PIVOT DATA
     full_grid = data_df.pivot_table(index=[cols['roll'], cols['name'], cols['batch'], cols['sem']],
                                     columns=cols['subject'], values=cols['attendance'], sort=False).reset_index()
     
-    for sub in batch_subjects:
+    # 2. FILTER OUT BLACKLISTED SUBJECTS COMPLETELY
+    final_subjects = [s for s in batch_subjects if str(s).upper() not in BLACKLIST]
+    
+    # Ensure columns exist and are numeric
+    for sub in final_subjects:
         if sub not in full_grid.columns: full_grid[sub] = None
         full_grid[sub] = pd.to_numeric(full_grid[sub], errors='coerce')
 
-    theory_cols = [c for c in batch_subjects if not any(x in str(c).upper() for x in ["LAB", "PRACTICAL", "WORKSHOP"])]
+    # 3. CALCULATIONS ON NON-BLACKLISTED DATA
+    theory_cols = [c for c in final_subjects if not any(x in str(c).upper() for x in ["LAB", "PRACTICAL", "WORKSHOP"])]
     full_grid['Theory Avg'] = full_grid[theory_cols].mean(axis=1).round(2)
-    full_grid['Final Avg'] = full_grid[batch_subjects].mean(axis=1).round(2)
+    full_grid['Final Avg'] = full_grid[final_subjects].mean(axis=1).round(2)
     
-    # Logic: Show shortage if ANY subject in this batch is below threshold
-    mask = (full_grid[batch_subjects] < threshold).any(axis=1)
+    # 4. APPLY SHORTAGE MASK
+    mask = (full_grid[final_subjects] < threshold).any(axis=1)
     shortage_grid = full_grid[mask].copy()
     
     if shortage_grid.empty: return None, None
     
-    sub_counts = (shortage_grid[batch_subjects] < threshold).sum()
-    for sub in batch_subjects:
-        # Keep values below threshold, clear others for clarity in reports
+    sub_counts = (shortage_grid[final_subjects] < threshold).sum()
+    for sub in final_subjects:
         shortage_grid[sub] = shortage_grid[sub].apply(lambda x: x if (pd.notnull(x) and x < threshold) else "")
     
     shortage_grid.insert(0, 'Sl No.', range(1, len(shortage_grid) + 1))
-    return shortage_grid, sub_counts
+    
+    # Strictly return only desired columns
+    final_cols = ['Sl No.', cols['roll'], cols['name'], cols['batch'], cols['sem']] + final_subjects + ['Theory Avg', 'Final Avg']
+    return shortage_grid[final_cols], sub_counts
 
 # --- 4. DASHBOARD INTERFACE ---
 st.markdown('<p class="welcome-note">Institutional Precision Hub</p>', unsafe_allow_html=True)
@@ -119,7 +125,6 @@ if uploaded_file:
         if any("ROLL NO" in str(x).upper() for x in row.values): h_row = i; break
     
     df = pd.read_excel(uploaded_file, header=h_row)
-    # Mapping Column F for Semester
     c_map = {'sem': df.columns[5]} 
     for c in df.columns:
         cs = str(c).strip()
@@ -133,7 +138,7 @@ if uploaded_file:
     output = io.BytesIO()
     
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        pd.DataFrame({"Report": ["Generated"]}).to_excel(writer, sheet_name="Audit", index=False)
+        pd.DataFrame({"Report": ["Cleaned Version"]}).to_excel(writer, sheet_name="Audit", index=False)
         summaries, subject_impact = [], pd.Series(dtype=float)
         
         depts = sorted(df['Dept'].unique())
@@ -146,19 +151,18 @@ if uploaded_file:
             with tabs[d_idx+1]:
                 for series in series_list:
                     s_df = d_df[d_df[c_map['batch']].astype(str).str.contains(series)]
-                    # Batch-Specific Subject Isolation (SS ATOM now excluded)
-                    s_subs = sorted([s for s in s_df[c_map['subject']].unique() if not any(b in str(s).upper() for b in BLACKLIST)])
+                    s_subs = sorted([s for s in s_df[c_map['subject']].unique() if str(s).upper() not in BLACKLIST])
                     
-                    # Series General Eye
+                    # 1. General Series Eye
                     gen_grid, _ = process_grid(s_df, c_map, s_subs)
                     if gen_grid is not None:
-                        with st.expander(f"👁️ {series} GENERAL SUMMARY"):
+                        with st.expander(f"👁️ {series} GENERAL (Blacklist Cleaned)"):
                             st.dataframe(gen_grid, hide_index=True, use_container_width=True)
                         sn = f"{series} GEN"[:31]
                         gen_grid.to_excel(writer, sheet_name=sn, index=False)
                         apply_styles(writer.sheets[sn])
                     
-                    # Section Eyes
+                    # 2. Section Eyes
                     sections = sorted(s_df[c_map['batch']].unique())
                     for sec in sections:
                         sec_df = s_df[s_df[c_map['batch']] == sec]
@@ -182,7 +186,7 @@ if uploaded_file:
                 
                 c1, c2 = st.columns(2)
                 with c1:
-                    st.plotly_chart(px.bar(sum_df, x='Section', y='Count', color='Section', template="plotly_dark", title="Section-wise Breakdown"), use_container_width=True)
+                    st.plotly_chart(px.bar(sum_df, x='Section', y='Count', color='Section', template="plotly_dark"), use_container_width=True)
                 with c2:
                     if not subject_impact.empty and subject_impact.sum() > 0:
                         impact_df = subject_impact.reset_index()
@@ -190,7 +194,4 @@ if uploaded_file:
                         st.plotly_chart(px.pie(impact_df.head(10), names='Subject', values='Students', hole=0.4, title="Top Subject Impact", template="plotly_dark"), use_container_width=True)
                 
                 sum_df.to_excel(writer, sheet_name='SUMMARY', index=False)
-            else:
-                st.success("No shortages found.")
-
-    st.download_button("📥 Download Universal Report", output.getvalue(), "VMS_Global_Report.xlsx", use_container_width=True)
+    st.download_button("📥 Download Cleaned Report", output.getvalue(), "VMS_Cleaned_Report.xlsx", use_container_width=True)
