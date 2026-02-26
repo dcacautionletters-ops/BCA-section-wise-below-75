@@ -98,7 +98,6 @@ def process_grid(data_df, cols, batch_subjects, threshold):
     return shortage_grid[final_cols], sub_counts
 
 # --- 4. DASHBOARD INTERFACE ---
-st.markdown('<p class="welcome-note">Institutional Precision Hub</p>', unsafe_allow_html=True)
 uploaded_file = st.file_uploader("📂 Upload Universal Attendance File", type=["xlsx"])
 
 if uploaded_file:
@@ -119,7 +118,6 @@ if uploaded_file:
 
     df['Dept'] = df[c_map['batch']].astype(str).apply(lambda x: x.split()[0].upper())
     
-    # SIDEBAR FILTERS
     with st.sidebar:
         st.markdown("### 🛠️ Global Parameters")
         threshold = st.slider("Shortage Threshold (%)", 50, 95, 75, 5)
@@ -127,7 +125,6 @@ if uploaded_file:
         dept_choice = st.selectbox("Select Department", ["All Departments"] + available_depts)
         if st.button("Logout"): st.session_state.authenticated = False; st.rerun()
 
-    # Filter Data based on selection
     if dept_choice != "All Departments":
         df = df[df['Dept'] == dept_choice]
         active_depts = [dept_choice]
@@ -182,13 +179,17 @@ if uploaded_file:
                 c1, c2 = st.columns(2)
                 with c1: st.plotly_chart(px.bar(sum_df, x='Section', y='Count', color='Section', template="plotly_dark"), use_container_width=True)
                 with c2:
+                    # SAFETY FIX: Ensure index is reset properly and dataframe is not empty
                     if not subject_impact.empty and subject_impact.sum() > 0:
-                        impact_df = subject_impact.reset_index().rename(columns={'index':'Subject', 0:'Students'})
-                        st.plotly_chart(px.pie(impact_df.head(10), names='Subject', values='Students', hole=0.4, title="Top Subject Impact", template="plotly_dark"), use_container_width=True)
+                        impact_df = subject_impact.reset_index()
+                        impact_df.columns = ['Subject', 'Students']
+                        # Final check for Plotly
+                        if not impact_df.empty:
+                            st.plotly_chart(px.pie(impact_df.head(10), names='Subject', values='Students', hole=0.4, title="Top Subject Impact", template="plotly_dark"), use_container_width=True)
                 sum_df.to_excel(writer, sheet_name='SUMMARY', index=False)
             else:
                 st.success(f"No shortages found for {dept_choice}.")
 
     st.download_button(f"📥 Download {dept_choice} Report", output.getvalue(), f"VMS_{dept_choice}_Report.xlsx", use_container_width=True)
 
-st.markdown('<div class="footer">Universal VMS v10.0 | Institutional Intelligence Active</div>', unsafe_allow_html=True)
+st.markdown('<div class="footer">Universal VMS v10.1 | Safety Link Active</div>', unsafe_allow_html=True)
