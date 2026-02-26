@@ -22,7 +22,7 @@ st.markdown("""
 
 st.markdown('<p class="main-title">🏛️ Department of Computer Applications</p>', unsafe_allow_html=True)
 st.markdown('<p class="welcome-note">Welcome to Presidency.</p>', unsafe_allow_html=True)
-st.markdown('<p class="magic-text">Precision Reporting: General + Section-Wise.</p>', unsafe_allow_html=True)
+st.markdown('<p class="magic-text">Precision Section Mapping & Global Color Coding.</p>', unsafe_allow_html=True)
 st.markdown('<p class="magician-icon">🧙‍♂️</p>', unsafe_allow_html=True)
 
 if 'magic_unlocked' not in st.session_state:
@@ -57,57 +57,45 @@ if st.session_state['magic_unlocked'] is True:
             cell.border = border
             ws.column_dimensions[cell.column_letter].width = 20
 
+        # Apply color coding to ALL rows and ALL subject columns
         for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
             for cell in row:
                 cell.border = border
                 cell.alignment = Alignment(horizontal="center")
-                if not is_summary and 4 < cell.column < (ws.max_column - 2) and cell.value:
+                # We apply logic to all numeric cells after Batch (Col 4) and before Averages
+                if not is_summary and cell.column > 4:
                     try:
-                        val = float(cell.value)
-                        if val < 70:
-                            cell.fill = crit_fill; cell.font = white_font
-                        else:
-                            cell.fill = warn_fill; cell.font = Font(bold=True, color="000000")
+                        if cell.value != "" and cell.value is not None:
+                            val = float(cell.value)
+                            if val < 70:
+                                cell.fill = crit_fill; cell.font = white_font
+                            else:
+                                cell.fill = warn_fill; cell.font = Font(bold=True, color="000000")
                     except: pass
-
-    def extract_section(batch_str):
-        match = re.search(r'[- ]([A-Z])$', str(batch_str).strip())
-        return match.group(1) if match else "Gen"
 
     def process_grid(data_df, cols, all_subjects):
         if data_df.empty: return None
-        
-        # Pivot everything first to calculate averages accurately
         full_grid = data_df.pivot_table(index=[cols['roll'], cols['name'], cols['batch']],
                                         columns=cols['subject'], values=cols['attendance'], sort=False).reset_index()
         
-        # Ensure all core subjects exist in the columns
         for sub in all_subjects:
-            if sub not in full_grid.columns:
-                full_grid[sub] = None
+            if sub not in full_grid.columns: full_grid[sub] = None
 
-        # Reorder columns: Sl No, Roll, Name, Batch, [Subjects], Averages
         sub_list = [s for s in all_subjects if s in full_grid.columns]
-        
-        # Averages Calculation
         theory_cols = [c for c in sub_list if not any(x in str(c).upper() for x in ["LAB", "PRACTICAL", "WORKSHOP"])]
         
         full_grid['Theory Avg'] = full_grid[theory_cols].mean(axis=1).round(2)
         full_grid['Final Avg'] = full_grid[sub_list].mean(axis=1).round(2)
         
-        # Filter: Only keep students who have at least one subject < 75%
         mask = (full_grid[sub_list] < 75).any(axis=1)
         shortage_grid = full_grid[mask].copy()
-        
         if shortage_grid.empty: return None
 
-        # Masking: Only show values in subject columns if they are < 75
+        # Show only shortage values in core columns
         for sub in sub_list:
             shortage_grid[sub] = shortage_grid[sub].apply(lambda x: x if (pd.notnull(x) and x < 75) else "")
 
         shortage_grid.insert(0, 'Sl No.', range(1, len(shortage_grid) + 1))
-        
-        # Final Column Order
         final_cols = ['Sl No.', cols['roll'], cols['name'], cols['batch']] + sub_list + ['Theory Avg', 'Final Avg']
         return shortage_grid[final_cols]
 
@@ -115,35 +103,36 @@ if st.session_state['magic_unlocked'] is True:
         batch_summaries = []
         for group in batches:
             course, year = group.split()
+            # Catch variations like "BCA AIML 2025" or "BCA DS 2025" under "BCA 2025"
             mask = (df[cols['batch']].astype(str).str.contains(course, case=False, na=False)) & \
                    (df[cols['batch']].astype(str).str.contains(year, na=False))
             batch_df = df[mask].copy()
-            
-            # Identify core subjects (Excluding Blacklist)
+            if batch_df.empty: continue
+
             core_subjects = sorted([s for s in batch_df[cols['subject']].unique() 
                                    if not any(b in str(s).upper() for b in BLACKLIST)])
             
-            if batch_df.empty: continue
-
-            # --- GENERAL REPORT ---
+            # --- 1. GENERAL ALL REPORT ---
             gen_grid = process_grid(batch_df, cols, core_subjects)
             if gen_grid is not None:
                 sh_name = f"{group} ALL"[:31]
                 gen_grid.to_excel(writer, sheet_name=sh_name, index=False)
                 apply_styles(writer.sheets[sh_name])
-                with st.expander(f"👁️ {group} - GENERAL (Shortage Count: {len(gen_grid)})"):
+                with st.expander(f"👁️ {group} - ALL SERIES"):
                     st.dataframe(gen_grid, hide_index=True)
 
-            # --- SECTION-WISE ---
-            batch_df['Ext_Sec'] = batch_df[cols['batch']].apply(extract_section)
-            for sec in sorted(batch_df['Ext_Sec'].unique()):
-                sec_df = batch_df[batch_df['Ext_Sec'] == sec]
+            # --- 2. SPECIFIC SECTION SHEETS ---
+            # Grouping by the literal Batch name found in Excel to avoid naming confusion
+            unique_batches = sorted(batch_df[cols['batch']].unique())
+            for ub in unique_batches:
+                sec_df = batch_df[batch_df[cols['batch']] == ub]
                 sec_grid = process_grid(sec_df, cols, core_subjects)
                 if sec_grid is not None:
-                    sh_name = f"{group} {sec}"[:31]
+                    # Naming sheet based on the actual batch name (e.g., BCA AIML 2025 A)
+                    sh_name = str(ub).replace("2024-2027", "").replace("2025-2028", "").strip()[:31]
                     sec_grid.to_excel(writer, sheet_name=sh_name, index=False)
                     apply_styles(writer.sheets[sh_name])
-                    batch_summaries.append({'Batch': group, 'Section': sec, 'Count': len(sec_grid)})
+                    batch_summaries.append({'Batch': ub, 'Count': len(sec_grid)})
         
         return batch_summaries
 
@@ -171,16 +160,16 @@ if st.session_state['magic_unlocked'] is True:
         
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            t1, t2, t3 = st.tabs(["🎓 BCA", "📜 MCA", "📊 Summary"])
+            t1, t2, t3 = st.tabs(["🎓 BCA Series", "📜 MCA Series", "📊 Summary"])
             with t1: bca_data = run_batch_logic(df, BCA_BATCHES, writer, c_map)
             with t2: mca_data = run_batch_logic(df, MCA_BATCHES, writer, c_map)
             with t3:
                 summary_df = pd.DataFrame(bca_data + mca_data)
                 if not summary_df.empty:
-                    st.plotly_chart(px.bar(summary_df, x='Batch', y='Count', color='Section', barmode='group'))
+                    st.plotly_chart(px.bar(summary_df, x='Batch', y='Count', title="Shortage per Batch Unit"))
                     summary_df.to_excel(writer, sheet_name='MASTER SUMMARY', index=False)
                     apply_styles(writer.sheets['MASTER SUMMARY'], is_summary=True)
 
-        st.download_button("📥 Download Final Report", output.getvalue(), "Attendance_Report_Fixed.xlsx")
+        st.download_button("📥 Download Magic Report", output.getvalue(), "Attendance_Report_v2.xlsx")
 
 st.markdown('<div class="footer">© VMS</div>', unsafe_allow_html=True)
