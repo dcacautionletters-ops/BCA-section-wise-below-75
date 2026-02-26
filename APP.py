@@ -41,7 +41,7 @@ if not st.session_state.authenticated:
     col1, col2, col3 = st.columns([1, 1.4, 1])
     with col2:
         if not st.session_state.booted:
-            st.markdown('<div class="portal-status">> Initiating Neural Link...<br>> Multi-Dept Logic Loaded.</div>', unsafe_allow_html=True)
+            st.markdown('<div class="portal-status">> Initializing Universal Engine...<br>> Ready for multi-dept processing.</div>', unsafe_allow_html=True)
             time.sleep(0.8); st.session_state.booted = True; st.rerun()
         u = st.text_input("Username")
         p = st.text_input("Password", type="password")
@@ -50,7 +50,7 @@ if not st.session_state.authenticated:
             else: st.error("Access Denied")
     st.stop()
 
-# --- 3. CORE LOGIC (DEPT-AGNOSTIC) ---
+# --- 3. CORE LOGIC (MADE DYNAMIC) ---
 BLACKLIST = ["BADMINTON", "BASKETBALL", "CROSS FITNESS", "SOFT SKILL", "SWIMMING", "ZUMBA", "FREESLOT", "TABLE TENNIS", "SS ATOM", "FREE SLOT"]
 ATT_COL_NAME = "Attended Hours with Approved Leave Percentage"
 
@@ -76,7 +76,8 @@ def apply_styles(ws, is_summary=False):
                         cell.fill = warn_fill
                 except: pass
 
-def get_pivot_data(data_df, cols, all_subjects):
+def process_grid(data_df, cols, all_subjects):
+    if data_df.empty: return None
     grid = data_df.pivot_table(index=[cols['roll'], cols['name'], cols['batch']],
                                     columns=cols['subject'], values=cols['attendance'], sort=False).reset_index()
     for sub in all_subjects:
@@ -85,17 +86,24 @@ def get_pivot_data(data_df, cols, all_subjects):
     theory_cols = [c for c in sub_list if not any(x in str(c).upper() for x in ["LAB", "PRACTICAL", "WORKSHOP"])]
     grid['Theory Avg'] = grid[theory_cols].mean(axis=1).round(2)
     grid['Final Avg'] = grid[sub_list].mean(axis=1).round(2)
-    return grid, sub_list
+    mask = (grid[sub_list] < 75).any(axis=1)
+    shortage_grid = grid[mask].copy()
+    if shortage_grid.empty: return None
+    for sub in sub_list:
+        shortage_grid[sub] = shortage_grid[sub].apply(lambda x: x if (pd.notnull(x) and x < 75) else "")
+    shortage_grid.insert(0, 'Sl No.', range(1, len(shortage_grid) + 1))
+    return shortage_grid[['Sl No.', cols['roll'], cols['name'], cols['batch']] + sub_list + ['Theory Avg', 'Final Avg']]
 
 # --- 4. THE INTERFACE ---
-st.markdown('<p class="welcome-note">Universal Analytics Hub</p>', unsafe_allow_html=True)
-uploaded_file = st.file_uploader("📂 Drop Departmental Attendance Excel Here", type=["xlsx"])
+st.markdown('<p class="welcome-note">Multi-Department Dashboard</p>', unsafe_allow_html=True)
+uploaded_file = st.file_uploader("📂 Upload Departmental Attendance Excel", type=["xlsx"])
 
 if uploaded_file:
     df_raw = pd.read_excel(uploaded_file, header=None).head(10)
     h_row = next(i for i, row in df_raw.iterrows() if any(k in str(row.values) for k in ["Roll No", "Batch"]))
     df = pd.read_excel(uploaded_file, header=h_row)
     
+    # Auto-Map Columns
     c_map = {}
     for c in df.columns:
         cs = str(c).strip()
@@ -106,68 +114,44 @@ if uploaded_file:
         elif ATT_COL_NAME in cs: c_map['attendance'] = c
 
     df[c_map['attendance']] = pd.to_numeric(df[c_map['attendance']], errors='coerce')
+    
+    # --- DYNAMIC DEPARTMENT DETECTION ---
+    # Extracts the first word (e.g., "BBA", "BCOM", "BCA") from the Batch column
     df['Dept_Key'] = df[c_map['batch']].astype(str).apply(lambda x: x.split()[0].upper())
     all_depts = sorted(df['Dept_Key'].unique())
     
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        tabs = st.tabs(["🔍 GLOBAL SEARCH"] + [f"💎 {d}" for d in all_depts] + ["📊 COMMAND CENTER"])
+        tabs = st.tabs([f"💎 {d} SERIES" for d in all_depts] + ["📊 COMMAND CENTER"])
         master_summaries = []
 
-        # PRE-PROCESS ALL DATA FOR SEARCH & TABS
-        all_grid_data = []
-
         for i, dept in enumerate(all_depts):
-            with tabs[i+1]:
+            with tabs[i]:
                 dept_df = df[df['Dept_Key'] == dept]
                 core_subs = sorted([s for s in dept_df[c_map['subject']].unique() if not any(b in str(s).upper() for b in BLACKLIST)])
                 
+                # Process each unique section within this department
                 sections = sorted(dept_df[c_map['batch']].unique())
                 for sec in sections:
                     sec_df = dept_df[dept_df[c_map['batch']] == sec]
-                    grid, sub_list = get_pivot_data(sec_df, c_map, core_subs)
-                    all_grid_data.append(grid)
-                    
-                    # Filter for shortage for the Excel report
-                    mask = (grid[sub_list] < 75).any(axis=1)
-                    shortage_grid = grid[mask].copy()
-                    
-                    if not shortage_grid.empty:
-                        for sub in sub_list:
-                            shortage_grid[sub] = shortage_grid[sub].apply(lambda x: x if (pd.notnull(x) and x < 75) else "")
-                        shortage_grid.insert(0, 'Sl No.', range(1, len(shortage_grid) + 1))
+                    grid = process_grid(sec_df, c_map, core_subs)
+                    if grid is not None:
                         sh_name = str(sec)[:31]
-                        shortage_grid.to_excel(writer, sheet_name=sh_name, index=False)
+                        grid.to_excel(writer, sheet_name=sh_name, index=False)
                         apply_styles(writer.sheets[sh_name])
-                        master_summaries.append({'Section': sec, 'Shortage': len(shortage_grid), 'Dept': dept})
-                        st.write(f"✅ Processed: {sec}")
-
-        # COMBINE DATA FOR SEARCH
-        full_master_df = pd.concat(all_grid_data, ignore_index=True)
-
-        with tabs[0]:
-            st.markdown("### 🕵️ Global Student Search")
-            search_query = st.text_input("Enter Student Name or Roll Number")
-            if search_query:
-                # Fuzzy search across name and roll
-                search_mask = (full_master_df[c_map['name']].astype(str).str.contains(search_query, case=False)) | \
-                             (full_master_df[c_map['roll']].astype(str).str.contains(search_query, case=False))
-                results = full_master_df[search_mask]
-                if not results.empty:
-                    st.dataframe(results, hide_index=True)
-                else:
-                    st.warning("No student found with those details.")
+                        master_summaries.append({'Section': sec, 'Shortage': len(grid), 'Dept': dept})
+                        st.write(f"✅ **{sec}** processed.")
 
         with tabs[-1]:
             summary_df = pd.DataFrame(master_summaries)
             if not summary_df.empty:
-                st.markdown("### 📍 Institutional Performance")
+                st.markdown("### 📍 Institutional Overview")
                 fig = px.bar(summary_df, x='Section', y='Shortage', color='Dept', 
-                           template="plotly_dark", barmode="group", color_discrete_sequence=px.colors.qualitative.Safe)
+                           title="Cross-Department Shortage Analytics", template="plotly_dark")
                 st.plotly_chart(fig, use_container_width=True)
                 summary_df.to_excel(writer, sheet_name='MASTER SUMMARY', index=False)
                 apply_styles(writer.sheets['MASTER SUMMARY'], is_summary=True)
 
-    st.download_button("📥 Extract Universal Magic Report", output.getvalue(), "Universal_VMS_Report.xlsx")
+    st.download_button("📥 Extract Universal Report", output.getvalue(), "Universal_Attendance_Report.xlsx")
 
-st.markdown('<div class="footer">Designed by © VMS | Secure Universal Session Active</div>', unsafe_allow_html=True)
+st.markdown('<div class="footer">Designed by © VMS | Dynamic Neural Link Active</div>', unsafe_allow_html=True)
