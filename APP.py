@@ -107,7 +107,6 @@ def apply_styles(ws, is_summary=False):
                 except: pass
 
 def process_grid(data_df, cols, all_subjects):
-    # Ensure Numeric Conversion to prevent TypeError
     data_df[cols['attendance']] = pd.to_numeric(data_df[cols['attendance']], errors='coerce')
     
     full_grid = data_df.pivot_table(index=[cols['roll'], cols['name'], cols['batch']],
@@ -128,7 +127,6 @@ def process_grid(data_df, cols, all_subjects):
     
     if shortage_grid.empty: return None, None
     
-    # Store subject-wise counts for analysis
     sub_shortage_counts = (shortage_grid[sub_list] < threshold).sum()
     
     for sub in sub_list:
@@ -159,13 +157,11 @@ if uploaded_file:
         elif any(x in cs for x in ["Course", "Subject"]): c_map['subject'] = c
         elif ATT_COL_NAME in cs: c_map['attendance'] = c
 
-    # Universal Dept Detection
     df['Dept_Prefix'] = df[c_map['batch']].astype(str).apply(lambda x: x.split()[0].upper())
     all_depts = sorted(df['Dept_Prefix'].unique())
     
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        # Prevent IndexError by creating status sheet
         pd.DataFrame({"Status": ["System Clean"], "Threshold": [threshold]}).to_excel(writer, sheet_name="Audit_Log", index=False)
         
         master_summaries = []
@@ -173,60 +169,55 @@ if uploaded_file:
 
         tabs = st.tabs(["📊 COMMAND CENTER"] + [f"💎 {d}" for d in all_depts])
         
-        # Process Logic
         for d_idx, dept in enumerate(all_depts):
             d_df = df[df['Dept_Prefix'] == dept]
             core_subs = sorted([s for s in d_df[c_map['subject']].unique() if not any(b in str(s).upper() for b in BLACKLIST)])
             sections = sorted(d_df[c_map['batch']].unique())
             
-            for sec in sections:
-                sec_df = d_df[d_df[c_map['batch']] == sec]
-                grid, sub_counts = process_grid(sec_df, c_map, core_subs)
-                
-                if grid is not None:
-                    sh_name = str(sec).replace("/", "-")[:31]
-                    grid.to_excel(writer, sheet_name=sh_name, index=False)
-                    apply_styles(writer.sheets[sh_name])
-                    master_summaries.append({'Section': sec, 'Count': len(grid), 'Dept': dept})
-                    subject_impact_data = subject_impact_data.add(sub_counts, fill_value=0)
-                    with tabs[d_idx+1]:
-                        st.write(f"✅ {sec} processed: {len(grid)} shortages.")
+            with tabs[d_idx+1]:
+                for sec in sections:
+                    sec_df = d_df[d_df[c_map['batch']] == sec]
+                    grid, sub_counts = process_grid(sec_df, c_map, core_subs)
+                    
+                    if grid is not None:
+                        # Eye Symbol Expander for Data
+                        with st.expander(f"👁️ {sec} processed: {len(grid)} shortages"):
+                            st.dataframe(grid, use_container_width=True, hide_index=True)
+                        
+                        sh_name = str(sec).replace("/", "-")[:31]
+                        grid.to_excel(writer, sheet_name=sh_name, index=False)
+                        apply_styles(writer.sheets[sh_name])
+                        master_summaries.append({'Section': sec, 'Count': len(grid), 'Dept': dept})
+                        subject_impact_data = subject_impact_data.add(sub_counts, fill_value=0)
+                    else:
+                        st.write(f"✅ {sec}: 0 shortages detected.")
 
         with tabs[0]:
             if master_summaries:
                 summary_df = pd.DataFrame(master_summaries)
                 
-                # Metric Cards
                 m_cols = st.columns(min(len(summary_df), 4))
                 for idx, row in summary_df.iterrows():
                     with m_cols[idx % 4]:
                         st.markdown(f"""<div class="glass-metric">
                             <div class="metric-title">{row['Section']}</div>
                             <div class="metric-value">{row['Count']}</div>
-                            <div style="color:#64748b; font-size:11px;">Students below {threshold}%</div>
+                            <div style="color:#64748b; font-size:11px;">Shortage Detected</div>
                         </div>""", unsafe_allow_html=True)
 
-                # Charts
-                c1, c2 = st.columns(2)
-                with c1:
-                    fig1 = px.bar(summary_df, x='Section', y='Count', color='Dept', 
-                                 title="Shortage by Section", template="plotly_dark",
-                                 color_discrete_sequence=px.colors.qualitative.Pastel)
-                    st.plotly_chart(fig1, use_container_width=True)
-                
-                with c2:
-                    impact_df = subject_impact_data.reset_index()
-                    impact_df.columns = ['Subject', 'Students']
-                    fig2 = px.pie(impact_df.sort_values(by='Students', ascending=False).head(10), 
-                                 names='Subject', values='Students', hole=0.4,
-                                 title="Most Impacted Subjects (Top 10)", template="plotly_dark")
-                    st.plotly_chart(fig2, use_container_width=True)
+                # Colorful Chart
+                fig1 = px.bar(summary_df, x='Section', y='Count', 
+                             color='Section',  # Different color for every section
+                             title="Shortage breakdown by Section", 
+                             template="plotly_dark",
+                             color_discrete_sequence=px.colors.qualitative.Prism)
+                st.plotly_chart(fig1, use_container_width=True)
 
                 summary_df.to_excel(writer, sheet_name='MASTER SUMMARY', index=False)
                 apply_styles(writer.sheets['MASTER SUMMARY'], is_summary=True)
             else:
-                st.success(f"🌟 Institutional Excellence: No students below {threshold}% found.")
+                st.success(f"🌟 Excellent Compliance! No students below {threshold}%.")
 
     st.download_button("📥 Extract Universal Magic Report", output.getvalue(), "VMS_Global_Attendance.xlsx", use_container_width=True)
 
-st.markdown('<div class="footer">Universal VMS Reporting System v8.0 | Institutional Intelligence Active</div>', unsafe_allow_html=True)
+st.markdown('<div class="footer">Designed by © VMS | Secure Universal Link Active</div>', unsafe_allow_html=True)
