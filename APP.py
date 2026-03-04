@@ -28,7 +28,6 @@ st.markdown("""
         box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
     }
     .metric-value { font-size: 42px; font-weight: 800; color: #92fe9d; }
-    .footer { position: fixed; bottom: 10px; width: 100%; text-align: center; color: #64748b; font-size: 11px; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -45,8 +44,33 @@ if not st.session_state.authenticated:
     st.stop()
 
 # --- 3. CORE LOGIC ---
-BLACKLIST = ["BADMINTON", "BASKETBALL", "CROSS FITNESS", "SOFT SKILL", "SWIMMING", "ZUMBA", "FREESLOT", "TABLE TENNIS", "SS ATOM", "FREE SLOT"]
+# Aggressive Blacklist: catches variations (e.g. "SOFT SKILL" matches "SOFT SKILLS")
+KEYWORDS_TO_IGNORE = ["BADMINTON", "BASKETBALL", "CROSS FITNESS", "SWIMMING", "ZUMBA", "TABLE TENNIS", 
+                      "FREESLOT", "FREE SLOT", "SOFT SKILL", "ATOM", "DSA"]
 ATT_COL_NAME = "Attended Hours with Approved Leave Percentage"
+
+def is_valid_subject(subject_name):
+    s_upper = str(subject_name).upper()
+    return not any(bad in s_upper for bad in KEYWORDS_TO_IGNORE)
+
+def get_bracket_summary(data_df, cols, subjects):
+    summary_data = []
+    for sub in subjects:
+        sub_vals = pd.to_numeric(data_df[data_df[cols['subject']] == sub][cols['attendance']], errors='coerce').dropna()
+        b1 = len(sub_vals[(sub_vals >= 0) & (sub_vals < 50)])
+        b2 = len(sub_vals[(sub_vals >= 50) & (sub_vals < 60)])
+        b3 = len(sub_vals[(sub_vals >= 60) & (sub_vals < 70)])
+        b4 = len(sub_vals[(sub_vals >= 70) & (sub_vals < 75)])
+        
+        summary_data.append({
+            "Subject": sub,
+            "0.00-49.99": b1,
+            "50.00-59.99": b2,
+            "60.00-69.99": b3,
+            "70.00-74.99": b4,
+            "Total": b1 + b2 + b3 + b4
+        })
+    return pd.DataFrame(summary_data)
 
 def apply_styles(ws, threshold, is_summary=False):
     thin = Side(style='thin', color="4D4D4D")
@@ -63,6 +87,10 @@ def apply_styles(ws, threshold, is_summary=False):
     for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
         for cell in row:
             cell.border, cell.alignment = border, Alignment(horizontal="center")
+            # Bold the Total column
+            if ws.cell(row=1, column=cell.column).value == "Total":
+                cell.font = Font(bold=True)
+            
             if not is_summary and cell.column > 5:
                 try:
                     val = float(cell.value)
@@ -77,7 +105,9 @@ def process_grid(data_df, cols, batch_subjects, threshold):
     full_grid = data_df.pivot_table(index=[cols['roll'], cols['name'], cols['batch'], cols['sem']],
                                     columns=cols['subject'], values=cols['attendance'], sort=False).reset_index()
     
-    final_subjects = [s for s in batch_subjects if str(s).upper() not in BLACKLIST]
+    # Apply aggressive filtering
+    final_subjects = [s for s in batch_subjects if is_valid_subject(s)]
+    
     for sub in final_subjects:
         if sub not in full_grid.columns: full_grid[sub] = None
         full_grid[sub] = pd.to_numeric(full_grid[sub], errors='coerce')
@@ -90,19 +120,24 @@ def process_grid(data_df, cols, batch_subjects, threshold):
     shortage_grid = full_grid[mask].copy()
     if shortage_grid.empty: return None, None
     
+    shortage_grid['Subjects in Shortage'] = (shortage_grid[final_subjects] < threshold).sum(axis=1)
     sub_counts = (shortage_grid[final_subjects] < threshold).sum()
+    
     for sub in final_subjects:
         shortage_grid[sub] = shortage_grid[sub].apply(lambda x: x if (pd.notnull(x) and x < threshold) else "")
     
     shortage_grid.insert(0, 'Sl No.', range(1, len(shortage_grid) + 1))
-    final_cols = ['Sl No.', cols['roll'], cols['name'], cols['batch'], cols['sem']] + final_subjects + ['Theory Avg', 'Final Avg']
-    return shortage_grid[final_cols], sub_counts
+    final_cols = ['Sl No.', cols['roll'], cols['name'], cols['batch'], cols['sem']] + final_subjects + ['Subjects in Shortage', 'Theory Avg', 'Final Avg']
+    
+    count_row = pd.DataFrame([["", "", "", "", "No. of Students with Shortage"] + [sub_counts[s] for s in final_subjects] + ["", "", ""]], columns=final_cols)
+    shortage_grid = pd.concat([shortage_grid, count_row], ignore_index=True)
+    
+    return shortage_grid, sub_counts
 
 # --- 4. DASHBOARD INTERFACE ---
 uploaded_file = st.file_uploader("📂 Upload Universal Attendance File", type=["xlsx"])
 
 if uploaded_file:
-    # AUTO-DETECTION OF HEADER ROW
     df_preview = pd.read_excel(uploaded_file, header=None).head(15)
     h_row = 0
     for i, row in df_preview.iterrows():
@@ -110,11 +145,8 @@ if uploaded_file:
             h_row = i
             break
     
-    # Reload with correct header
     df = pd.read_excel(uploaded_file, header=h_row)
-    
-    # Map Columns
-    c_map = {'sem': df.columns[5]} # Column F
+    c_map = {'sem': df.columns[5]} 
     for c in df.columns:
         cs = str(c).strip()
         if "Roll No" in cs: c_map['roll'] = c
@@ -123,20 +155,32 @@ if uploaded_file:
         elif any(x in cs for x in ["Course", "Subject"]): c_map['subject'] = c
         elif ATT_COL_NAME in cs: c_map['attendance'] = c
 
+    # Filter out blacklisted subjects from the main DataFrame immediately
+    df = df[df[c_map['subject']].apply(is_valid_subject)]
+    
     df['Dept'] = df[c_map['batch']].astype(str).apply(lambda x: x.split()[0].upper())
+    
+    all_subjects = sorted(df[c_map['subject']].unique())
     
     with st.sidebar:
         st.markdown("### 🛠️ Global Parameters")
         threshold = st.slider("Shortage Threshold (%)", 50, 95, 75, 5)
-        available_depts = sorted(df['Dept'].unique())
-        dept_choice = st.selectbox("Select Department", ["All Departments"] + available_depts)
+        dept_choice = st.selectbox("Select Department", ["All Departments"] + sorted(df['Dept'].unique()))
+        
+        st.divider()
+        st.markdown("### 🔍 Exclusion Filters")
+        exclude_subjects = st.multiselect("Exclude Subjects/Faculty", all_subjects)
+        
         if st.button("Logout"): st.session_state.authenticated = False; st.rerun()
 
+    if exclude_subjects:
+        df = df[~df[c_map['subject']].isin(exclude_subjects)]
+        
     if dept_choice != "All Departments":
         df = df[df['Dept'] == dept_choice]
         active_depts = [dept_choice]
     else:
-        active_depts = available_depts
+        active_depts = sorted(df['Dept'].unique())
 
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -147,12 +191,23 @@ if uploaded_file:
 
         for d_idx, dept in enumerate(active_depts):
             d_df = df[df['Dept'] == dept]
-            series_list = sorted(d_df[c_map['batch']].astype(str).apply(lambda x: ' '.join(x.split()[:2])).unique())
+            
+            unique_batches = d_df[c_map['batch']].astype(str).unique()
+            series_list = set()
+            for b in unique_batches:
+                if "2025" in b: series_list.add("BCA 2025")
+                else: series_list.add(' '.join(b.split()[:2]))
+            series_list = sorted(list(series_list))
             
             with tabs[d_idx+1]:
                 for series in series_list:
-                    s_df = d_df[d_df[c_map['batch']].astype(str).str.contains(series)]
-                    s_subs = sorted([s for s in s_df[c_map['subject']].unique() if str(s).upper() not in BLACKLIST])
+                    if series == "BCA 2025":
+                        s_df = d_df[d_df[c_map['batch']].str.contains("2025")]
+                    else:
+                        s_df = d_df[d_df[c_map['batch']].astype(str).str.contains(series)]
+                    
+                    # Filtering subjects for the tab
+                    s_subs = sorted([s for s in s_df[c_map['subject']].unique() if is_valid_subject(s)])
                     
                     gen_grid, _ = process_grid(s_df, c_map, s_subs, threshold)
                     if gen_grid is not None:
@@ -160,6 +215,7 @@ if uploaded_file:
                             st.dataframe(gen_grid, hide_index=True, use_container_width=True)
                         sn = f"{series} GEN"[:31]
                         gen_grid.to_excel(writer, sheet_name=sn, index=False)
+                        get_bracket_summary(s_df, c_map, s_subs).to_excel(writer, sheet_name=sn, startrow=len(gen_grid)+2, index=False)
                         apply_styles(writer.sheets[sn], threshold)
                     
                     sections = sorted(s_df[c_map['batch']].unique())
@@ -167,12 +223,13 @@ if uploaded_file:
                         sec_df = s_df[s_df[c_map['batch']] == sec]
                         grid, counts = process_grid(sec_df, c_map, s_subs, threshold)
                         if grid is not None:
-                            with st.expander(f"👁️ {sec}: {len(grid)} Shortages"):
+                            with st.expander(f"👁️ {sec}: {len(grid)-1} Shortages"):
                                 st.dataframe(grid, hide_index=True, use_container_width=True)
                             sn_sec = str(sec).replace("/", "-")[:31]
                             grid.to_excel(writer, sheet_name=sn_sec, index=False)
+                            get_bracket_summary(sec_df, c_map, s_subs).to_excel(writer, sheet_name=sn_sec, startrow=len(grid)+2, index=False)
                             apply_styles(writer.sheets[sn_sec], threshold)
-                            summaries.append({'Section': sec, 'Count': len(grid)})
+                            summaries.append({'Section': sec, 'Count': len(grid)-1})
                             subject_impact = subject_impact.add(counts, fill_value=0)
 
         with tabs[0]:
