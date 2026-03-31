@@ -125,7 +125,6 @@ def process_grid(data_df, cols, batch_subjects, threshold, show_all=False):
     shortage_grid['Subjects in Shortage'] = (shortage_grid[final_subjects] < threshold).sum(axis=1)
     sub_counts = (shortage_grid[final_subjects] < threshold).sum()
     
-    # Apply threshold masking only for the "Shortage" report, keep values for "ALL" report but styling handles colors
     if not show_all:
         for sub in final_subjects:
             shortage_grid[sub] = shortage_grid[sub].apply(lambda x: x if (pd.notnull(x) and x < threshold) else "")
@@ -197,7 +196,8 @@ if uploaded_file:
             series_list = set()
             for b in unique_batches:
                 b_parts = b.split()
-                series_list.add(' '.join(b_parts[:2]))
+                # UPDATED: Take first 3 parts (e.g., MBA BU 2025) to ensure year-wise separation
+                series_list.add(' '.join(b_parts[:3]))
             series_list = sorted(list(series_list))
             
             with tabs[d_idx+1]:
@@ -215,7 +215,7 @@ if uploaded_file:
                         get_bracket_summary(s_df, c_map, s_subs).to_excel(writer, sheet_name=sn, startrow=len(gen_grid)+2, index=False)
                         apply_styles(writer.sheets[sn], threshold)
 
-                    # 2. GENERATE FULL REPORT (ALL) - 0 to 100%
+                    # 2. GENERATE FULL REPORT (ALL)
                     all_grid, _ = process_grid(s_df, c_map, s_subs, threshold, show_all=True)
                     if all_grid is not None:
                         sn_all = f"{series} GEN ALL"[:31]
