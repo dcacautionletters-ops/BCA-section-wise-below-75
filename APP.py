@@ -6,8 +6,8 @@ import plotly.express as px
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 
 # --- 1. UI CONFIGURATION ---
-st.set_page_config(page_title="VMS Universal Reporting", layout="wide")
-MASTER_PASSWORD = "VMS@123"
+st.set_page_config(page_title="FRS Universal Reporting", layout="wide")
+MASTER_PASSWORD = "FRS@123"
 
 st.markdown("""
     <style>
@@ -34,7 +34,7 @@ st.markdown("""
 # --- 2. AUTHENTICATION ---
 if 'authenticated' not in st.session_state: st.session_state.authenticated = False
 if not st.session_state.authenticated:
-    st.markdown('<p class="welcome-note">VMS Reporting System</p>', unsafe_allow_html=True)
+    st.markdown('<p class="welcome-note">FRS Reporting System</p>', unsafe_allow_html=True)
     col1, col2, col3 = st.columns([1, 1.4, 1])
     with col2:
         p = st.text_input("Password", type="password")
@@ -44,7 +44,6 @@ if not st.session_state.authenticated:
     st.stop()
 
 # --- 3. CORE LOGIC ---
-# Aggressive Blacklist: catches variations (e.g. "SOFT SKILL" matches "SOFT SKILLS")
 KEYWORDS_TO_IGNORE = ["BADMINTON", "BASKETBALL", "CROSS FITNESS", "SWIMMING", "ZUMBA", "TABLE TENNIS", 
                       "FREESLOT", "FREE SLOT", "SOFT SKILL", "ATOM", "DSA"]
 ATT_COL_NAME = "Attended Hours with Approved Leave Percentage"
@@ -87,7 +86,6 @@ def apply_styles(ws, threshold, is_summary=False):
     for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
         for cell in row:
             cell.border, cell.alignment = border, Alignment(horizontal="center")
-            # Bold the Total column
             if ws.cell(row=1, column=cell.column).value == "Total":
                 cell.font = Font(bold=True)
             
@@ -95,7 +93,7 @@ def apply_styles(ws, threshold, is_summary=False):
                 try:
                     val = float(cell.value)
                     if val < 70: cell.fill, cell.font = crit_fill, Font(bold=True, color="FFFFFF")
-                    elif 70 <= val < threshold: cell.fill, cell.font = warn_fill, Font(bold=True, color="000000")
+                    elif 70 <= val < 75: cell.fill, cell.font = warn_fill, Font(bold=True, color="000000")
                 except: pass
 
 def process_grid(data_df, cols, batch_subjects, threshold):
@@ -105,7 +103,6 @@ def process_grid(data_df, cols, batch_subjects, threshold):
     full_grid = data_df.pivot_table(index=[cols['roll'], cols['name'], cols['batch'], cols['sem']],
                                     columns=cols['subject'], values=cols['attendance'], sort=False).reset_index()
     
-    # Apply aggressive filtering
     final_subjects = [s for s in batch_subjects if is_valid_subject(s)]
     
     for sub in final_subjects:
@@ -116,23 +113,20 @@ def process_grid(data_df, cols, batch_subjects, threshold):
     full_grid['Theory Avg'] = full_grid[theory_cols].mean(axis=1).round(2)
     full_grid['Final Avg'] = full_grid[final_subjects].mean(axis=1).round(2)
     
-    mask = (full_grid[final_subjects] < threshold).any(axis=1)
-    shortage_grid = full_grid[mask].copy()
-    if shortage_grid.empty: return None, None
+    # Grid now contains all students
+    res_grid = full_grid.copy()
     
-    shortage_grid['Subjects in Shortage'] = (shortage_grid[final_subjects] < threshold).sum(axis=1)
-    sub_counts = (shortage_grid[final_subjects] < threshold).sum()
+    # Calculate shortage indicators
+    res_grid['Subjects in Shortage'] = (res_grid[final_subjects] < threshold).sum(axis=1)
+    sub_counts = (res_grid[final_subjects] < threshold).sum()
     
-    for sub in final_subjects:
-        shortage_grid[sub] = shortage_grid[sub].apply(lambda x: x if (pd.notnull(x) and x < threshold) else "")
-    
-    shortage_grid.insert(0, 'Sl No.', range(1, len(shortage_grid) + 1))
+    res_grid.insert(0, 'Sl No.', range(1, len(res_grid) + 1))
     final_cols = ['Sl No.', cols['roll'], cols['name'], cols['batch'], cols['sem']] + final_subjects + ['Subjects in Shortage', 'Theory Avg', 'Final Avg']
     
     count_row = pd.DataFrame([["", "", "", "", "No. of Students with Shortage"] + [sub_counts[s] for s in final_subjects] + ["", "", ""]], columns=final_cols)
-    shortage_grid = pd.concat([shortage_grid, count_row], ignore_index=True)
+    res_grid = pd.concat([res_grid, count_row], ignore_index=True)
     
-    return shortage_grid, sub_counts
+    return res_grid, sub_counts
 
 # --- 4. DASHBOARD INTERFACE ---
 uploaded_file = st.file_uploader("📂 Upload Universal Attendance File", type=["xlsx"])
@@ -155,22 +149,17 @@ if uploaded_file:
         elif any(x in cs for x in ["Course", "Subject"]): c_map['subject'] = c
         elif ATT_COL_NAME in cs: c_map['attendance'] = c
 
-    # Filter out blacklisted subjects from the main DataFrame immediately
     df = df[df[c_map['subject']].apply(is_valid_subject)]
-    
     df['Dept'] = df[c_map['batch']].astype(str).apply(lambda x: x.split()[0].upper())
-    
     all_subjects = sorted(df[c_map['subject']].unique())
     
     with st.sidebar:
         st.markdown("### 🛠️ Global Parameters")
         threshold = st.slider("Shortage Threshold (%)", 50, 95, 75, 5)
         dept_choice = st.selectbox("Select Department", ["All Departments"] + sorted(df['Dept'].unique()))
-        
         st.divider()
         st.markdown("### 🔍 Exclusion Filters")
         exclude_subjects = st.multiselect("Exclude Subjects/Faculty", all_subjects)
-        
         if st.button("Logout"): st.session_state.authenticated = False; st.rerun()
 
     if exclude_subjects:
@@ -191,22 +180,17 @@ if uploaded_file:
 
         for d_idx, dept in enumerate(active_depts):
             d_df = df[df['Dept'] == dept]
-            
             unique_batches = d_df[c_map['batch']].astype(str).unique()
             series_list = set()
             for b in unique_batches:
-                if "2025" in b: series_list.add("BCA 2025")
-                else: series_list.add(' '.join(b.split()[:2]))
+                parts = b.split()
+                if len(parts) >= 2: series_list.add(f"{parts[0]} {parts[1]}")
+                else: series_list.add(parts[0])
             series_list = sorted(list(series_list))
             
             with tabs[d_idx+1]:
                 for series in series_list:
-                    if series == "BCA 2025":
-                        s_df = d_df[d_df[c_map['batch']].str.contains("2025")]
-                    else:
-                        s_df = d_df[d_df[c_map['batch']].astype(str).str.contains(series)]
-                    
-                    # Filtering subjects for the tab
+                    s_df = d_df[d_df[c_map['batch']].astype(str).str.contains(series)]
                     s_subs = sorted([s for s in s_df[c_map['subject']].unique() if is_valid_subject(s)])
                     
                     gen_grid, _ = process_grid(s_df, c_map, s_subs, threshold)
@@ -223,13 +207,16 @@ if uploaded_file:
                         sec_df = s_df[s_df[c_map['batch']] == sec]
                         grid, counts = process_grid(sec_df, c_map, s_subs, threshold)
                         if grid is not None:
-                            with st.expander(f"👁️ {sec}: {len(grid)-1} Shortages"):
+                            with st.expander(f"👁️ {sec}: {len(grid)-1} Students"):
                                 st.dataframe(grid, hide_index=True, use_container_width=True)
                             sn_sec = str(sec).replace("/", "-")[:31]
                             grid.to_excel(writer, sheet_name=sn_sec, index=False)
                             get_bracket_summary(sec_df, c_map, s_subs).to_excel(writer, sheet_name=sn_sec, startrow=len(grid)+2, index=False)
                             apply_styles(writer.sheets[sn_sec], threshold)
-                            summaries.append({'Section': sec, 'Count': len(grid)-1})
+                            
+                            # --- FIXED LINE BELOW ---
+                            shortage_count = (grid.iloc[:-1][s_subs] < threshold).any(axis=1).sum()
+                            summaries.append({'Section': sec, 'Count': shortage_count})
                             subject_impact = subject_impact.add(counts, fill_value=0)
 
         with tabs[0]:
@@ -246,10 +233,9 @@ if uploaded_file:
                     if not subject_impact.empty and subject_impact.sum() > 0:
                         impact_df = subject_impact.reset_index()
                         impact_df.columns = ['Subject', 'Students']
-                        if not impact_df.empty:
-                            st.plotly_chart(px.pie(impact_df.head(10), names='Subject', values='Students', hole=0.4, title="Top Subject Impact", template="plotly_dark"), use_container_width=True)
+                        st.plotly_chart(px.pie(impact_df.head(10), names='Subject', values='Students', hole=0.4, title="Top Subject Impact", template="plotly_dark"), use_container_width=True)
                 sum_df.to_excel(writer, sheet_name='SUMMARY', index=False)
             else:
-                st.success(f"No shortages found for {dept_choice}.")
+                st.success(f"No data to summarize.")
 
     st.download_button(f"📥 Download {dept_choice} Report", output.getvalue(), f"VMS_{dept_choice}_Report.xlsx", use_container_width=True)
