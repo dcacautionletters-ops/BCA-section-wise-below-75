@@ -195,14 +195,33 @@ if uploaded_file:
             unique_batches = d_df[c_map['batch']].astype(str).unique()
             series_list = set()
             for b in unique_batches:
+                b_upper = b.upper()
                 b_parts = b.split()
-                # UPDATED: Take first 3 parts (e.g., MBA BU 2025) to ensure year-wise separation
-                series_list.add(' '.join(b_parts[:3]))
+                
+                # Logic for BCA (Grouping BCA, BCA AIML, BCA DS under BCA 2025/2024)
+                if "BCA" in b_upper:
+                    year = next((p for p in b_parts if p.isdigit()), "Series")
+                    series_list.add(f"BCA {year}")
+                # Logic for MCA (Grouping all MCA under MCA 2025/2024)
+                elif "MCA" in b_upper:
+                    year = next((p for p in b_parts if p.isdigit()), "Series")
+                    series_list.add(f"MCA {year}")
+                # Logic for MBA BU and MCOM FA (Grouping by the requested prefix + Year)
+                elif "MBA" in b_upper:
+                    series_list.add(' '.join(b_parts[:3])) # MBA BU 2025
+                elif "MCOM" in b_upper:
+                    series_list.add(' '.join(b_parts[:3])) # MCOM FA 2025
+                else:
+                    series_list.add(' '.join(b_parts[:2]))
+            
             series_list = sorted(list(series_list))
             
             with tabs[d_idx+1]:
                 for series in series_list:
-                    s_df = d_df[d_df[c_map['batch']].astype(str).str.contains(series)]
+                    # Filter data: use 'contains' to catch sub-streams in one sheet
+                    s_df = d_df[d_df[c_map['batch']].astype(str).str.contains(series.split()[0]) & 
+                                d_df[c_map['batch']].astype(str).str.contains(series.split()[-1])]
+                    
                     s_subs = sorted([s for s in s_df[c_map['subject']].unique() if is_valid_subject(s)])
                     
                     # 1. GENERATE SHORTAGE REPORT (GEN)
@@ -223,6 +242,7 @@ if uploaded_file:
                         get_bracket_summary(s_df, c_map, s_subs).to_excel(writer, sheet_name=sn_all, startrow=len(all_grid)+2, index=False)
                         apply_styles(writer.sheets[sn_all], threshold)
                     
+                    # Section-wise reports remain as they are
                     sections = sorted(s_df[c_map['batch']].unique())
                     for sec in sections:
                         sec_df = s_df[s_df[c_map['batch']] == sec]
