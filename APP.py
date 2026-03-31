@@ -6,8 +6,8 @@ import plotly.express as px
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 
 # --- 1. UI CONFIGURATION ---
-st.set_page_config(page_title="FRS Universal Reporting", layout="wide")
-MASTER_PASSWORD = "FRS@123"
+st.set_page_config(page_title="VMS Universal Reporting", layout="wide")
+MASTER_PASSWORD = "VMS@123"
 
 st.markdown("""
     <style>
@@ -34,7 +34,7 @@ st.markdown("""
 # --- 2. AUTHENTICATION ---
 if 'authenticated' not in st.session_state: st.session_state.authenticated = False
 if not st.session_state.authenticated:
-    st.markdown('<p class="welcome-note">FRS Reporting System</p>', unsafe_allow_html=True)
+    st.markdown('<p class="welcome-note">VMS Reporting System</p>', unsafe_allow_html=True)
     col1, col2, col3 = st.columns([1, 1.4, 1])
     with col2:
         p = st.text_input("Password", type="password")
@@ -93,11 +93,12 @@ def apply_styles(ws, threshold, is_summary=False):
                 try:
                     val = float(cell.value)
                     if val < 70: cell.fill, cell.font = crit_fill, Font(bold=True, color="FFFFFF")
-                    elif 70 <= val < 75: cell.fill, cell.font = warn_fill, Font(bold=True, color="000000")
+                    elif 70 <= val < threshold: cell.fill, cell.font = warn_fill, Font(bold=True, color="000000")
                 except: pass
 
-def process_grid(data_df, cols, batch_subjects, threshold):
+def process_grid(data_df, cols, batch_subjects, threshold, show_all=False):
     if data_df.empty: return None, None
+    data_df = data_df.copy()
     data_df[cols['attendance']] = pd.to_numeric(data_df[cols['attendance']], errors='coerce')
     
     full_grid = data_df.pivot_table(index=[cols['roll'], cols['name'], cols['batch'], cols['sem']],
@@ -113,20 +114,29 @@ def process_grid(data_df, cols, batch_subjects, threshold):
     full_grid['Theory Avg'] = full_grid[theory_cols].mean(axis=1).round(2)
     full_grid['Final Avg'] = full_grid[final_subjects].mean(axis=1).round(2)
     
-    # Grid now contains all students
-    res_grid = full_grid.copy()
+    if show_all:
+        shortage_grid = full_grid.copy()
+    else:
+        mask = (full_grid[final_subjects] < threshold).any(axis=1)
+        shortage_grid = full_grid[mask].copy()
     
-    # Calculate shortage indicators
-    res_grid['Subjects in Shortage'] = (res_grid[final_subjects] < threshold).sum(axis=1)
-    sub_counts = (res_grid[final_subjects] < threshold).sum()
+    if shortage_grid.empty: return None, None
     
-    res_grid.insert(0, 'Sl No.', range(1, len(res_grid) + 1))
+    shortage_grid['Subjects in Shortage'] = (shortage_grid[final_subjects] < threshold).sum(axis=1)
+    sub_counts = (shortage_grid[final_subjects] < threshold).sum()
+    
+    # Apply threshold masking only for the "Shortage" report, keep values for "ALL" report but styling handles colors
+    if not show_all:
+        for sub in final_subjects:
+            shortage_grid[sub] = shortage_grid[sub].apply(lambda x: x if (pd.notnull(x) and x < threshold) else "")
+    
+    shortage_grid.insert(0, 'Sl No.', range(1, len(shortage_grid) + 1))
     final_cols = ['Sl No.', cols['roll'], cols['name'], cols['batch'], cols['sem']] + final_subjects + ['Subjects in Shortage', 'Theory Avg', 'Final Avg']
     
     count_row = pd.DataFrame([["", "", "", "", "No. of Students with Shortage"] + [sub_counts[s] for s in final_subjects] + ["", "", ""]], columns=final_cols)
-    res_grid = pd.concat([res_grid, count_row], ignore_index=True)
+    shortage_grid = pd.concat([shortage_grid, count_row], ignore_index=True)
     
-    return res_grid, sub_counts
+    return shortage_grid, sub_counts
 
 # --- 4. DASHBOARD INTERFACE ---
 uploaded_file = st.file_uploader("📂 Upload Universal Attendance File", type=["xlsx"])
@@ -157,9 +167,11 @@ if uploaded_file:
         st.markdown("### 🛠️ Global Parameters")
         threshold = st.slider("Shortage Threshold (%)", 50, 95, 75, 5)
         dept_choice = st.selectbox("Select Department", ["All Departments"] + sorted(df['Dept'].unique()))
+        
         st.divider()
         st.markdown("### 🔍 Exclusion Filters")
         exclude_subjects = st.multiselect("Exclude Subjects/Faculty", all_subjects)
+        
         if st.button("Logout"): st.session_state.authenticated = False; st.rerun()
 
     if exclude_subjects:
@@ -180,12 +192,12 @@ if uploaded_file:
 
         for d_idx, dept in enumerate(active_depts):
             d_df = df[df['Dept'] == dept]
+            
             unique_batches = d_df[c_map['batch']].astype(str).unique()
             series_list = set()
             for b in unique_batches:
-                parts = b.split()
-                if len(parts) >= 2: series_list.add(f"{parts[0]} {parts[1]}")
-                else: series_list.add(parts[0])
+                b_parts = b.split()
+                series_list.add(' '.join(b_parts[:2]))
             series_list = sorted(list(series_list))
             
             with tabs[d_idx+1]:
@@ -193,30 +205,36 @@ if uploaded_file:
                     s_df = d_df[d_df[c_map['batch']].astype(str).str.contains(series)]
                     s_subs = sorted([s for s in s_df[c_map['subject']].unique() if is_valid_subject(s)])
                     
-                    gen_grid, _ = process_grid(s_df, c_map, s_subs, threshold)
+                    # 1. GENERATE SHORTAGE REPORT (GEN)
+                    gen_grid, _ = process_grid(s_df, c_map, s_subs, threshold, show_all=False)
                     if gen_grid is not None:
-                        with st.expander(f"👁️ {series} GENERAL SUMMARY"):
+                        with st.expander(f"👁️ {series} SHORTAGE SUMMARY"):
                             st.dataframe(gen_grid, hide_index=True, use_container_width=True)
                         sn = f"{series} GEN"[:31]
                         gen_grid.to_excel(writer, sheet_name=sn, index=False)
                         get_bracket_summary(s_df, c_map, s_subs).to_excel(writer, sheet_name=sn, startrow=len(gen_grid)+2, index=False)
                         apply_styles(writer.sheets[sn], threshold)
+
+                    # 2. GENERATE FULL REPORT (ALL) - 0 to 100%
+                    all_grid, _ = process_grid(s_df, c_map, s_subs, threshold, show_all=True)
+                    if all_grid is not None:
+                        sn_all = f"{series} GEN ALL"[:31]
+                        all_grid.to_excel(writer, sheet_name=sn_all, index=False)
+                        get_bracket_summary(s_df, c_map, s_subs).to_excel(writer, sheet_name=sn_all, startrow=len(all_grid)+2, index=False)
+                        apply_styles(writer.sheets[sn_all], threshold)
                     
                     sections = sorted(s_df[c_map['batch']].unique())
                     for sec in sections:
                         sec_df = s_df[s_df[c_map['batch']] == sec]
                         grid, counts = process_grid(sec_df, c_map, s_subs, threshold)
                         if grid is not None:
-                            with st.expander(f"👁️ {sec}: {len(grid)-1} Students"):
+                            with st.expander(f"👁️ {sec}: {len(grid)-1} Shortages"):
                                 st.dataframe(grid, hide_index=True, use_container_width=True)
                             sn_sec = str(sec).replace("/", "-")[:31]
                             grid.to_excel(writer, sheet_name=sn_sec, index=False)
                             get_bracket_summary(sec_df, c_map, s_subs).to_excel(writer, sheet_name=sn_sec, startrow=len(grid)+2, index=False)
                             apply_styles(writer.sheets[sn_sec], threshold)
-                            
-                            # --- FIXED LINE BELOW ---
-                            shortage_count = (grid.iloc[:-1][s_subs] < threshold).any(axis=1).sum()
-                            summaries.append({'Section': sec, 'Count': shortage_count})
+                            summaries.append({'Section': sec, 'Count': len(grid)-1})
                             subject_impact = subject_impact.add(counts, fill_value=0)
 
         with tabs[0]:
@@ -233,9 +251,10 @@ if uploaded_file:
                     if not subject_impact.empty and subject_impact.sum() > 0:
                         impact_df = subject_impact.reset_index()
                         impact_df.columns = ['Subject', 'Students']
-                        st.plotly_chart(px.pie(impact_df.head(10), names='Subject', values='Students', hole=0.4, title="Top Subject Impact", template="plotly_dark"), use_container_width=True)
+                        if not impact_df.empty:
+                            st.plotly_chart(px.pie(impact_df.head(10), names='Subject', values='Students', hole=0.4, title="Top Subject Impact", template="plotly_dark"), use_container_width=True)
                 sum_df.to_excel(writer, sheet_name='SUMMARY', index=False)
             else:
-                st.success(f"No data to summarize.")
+                st.success(f"No shortages found for {dept_choice}.")
 
     st.download_button(f"📥 Download {dept_choice} Report", output.getvalue(), f"VMS_{dept_choice}_Report.xlsx", use_container_width=True)
