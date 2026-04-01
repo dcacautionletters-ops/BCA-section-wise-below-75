@@ -164,7 +164,8 @@ if uploaded_file:
     
     with st.sidebar:
         st.markdown("### 🛠️ Global Parameters")
-        threshold = st.slider("Shortage Threshold (%)", 50, 95, 75, 5)
+        # CHANGED: Replaced slider with number_input for exact decimal control
+        threshold = st.number_input("Shortage Threshold (%)", min_value=0.00, max_value=100.00, value=75.00, step=0.01, format="%.2f")
         dept_choice = st.selectbox("Select Department", ["All Departments"] + sorted(df['Dept'].unique()))
         
         st.divider()
@@ -198,19 +199,16 @@ if uploaded_file:
                 b_upper = b.upper()
                 b_parts = b.split()
                 
-                # Logic for BCA (Grouping BCA, BCA AIML, BCA DS under BCA 2025/2024)
                 if "BCA" in b_upper:
                     year = next((p for p in b_parts if p.isdigit()), "Series")
                     series_list.add(f"BCA {year}")
-                # Logic for MCA (Grouping all MCA under MCA 2025/2024)
                 elif "MCA" in b_upper:
                     year = next((p for p in b_parts if p.isdigit()), "Series")
                     series_list.add(f"MCA {year}")
-                # Logic for MBA BU and MCOM FA (Grouping by the requested prefix + Year)
                 elif "MBA" in b_upper:
-                    series_list.add(' '.join(b_parts[:3])) # MBA BU 2025
+                    series_list.add(' '.join(b_parts[:3])) 
                 elif "MCOM" in b_upper:
-                    series_list.add(' '.join(b_parts[:3])) # MCOM FA 2025
+                    series_list.add(' '.join(b_parts[:3])) 
                 else:
                     series_list.add(' '.join(b_parts[:2]))
             
@@ -218,13 +216,11 @@ if uploaded_file:
             
             with tabs[d_idx+1]:
                 for series in series_list:
-                    # Filter data: use 'contains' to catch sub-streams in one sheet
                     s_df = d_df[d_df[c_map['batch']].astype(str).str.contains(series.split()[0]) & 
                                 d_df[c_map['batch']].astype(str).str.contains(series.split()[-1])]
                     
                     s_subs = sorted([s for s in s_df[c_map['subject']].unique() if is_valid_subject(s)])
                     
-                    # 1. GENERATE SHORTAGE REPORT (GEN)
                     gen_grid, _ = process_grid(s_df, c_map, s_subs, threshold, show_all=False)
                     if gen_grid is not None:
                         with st.expander(f"👁️ {series} SHORTAGE SUMMARY"):
@@ -234,7 +230,6 @@ if uploaded_file:
                         get_bracket_summary(s_df, c_map, s_subs).to_excel(writer, sheet_name=sn, startrow=len(gen_grid)+2, index=False)
                         apply_styles(writer.sheets[sn], threshold)
 
-                    # 2. GENERATE FULL REPORT (ALL)
                     all_grid, _ = process_grid(s_df, c_map, s_subs, threshold, show_all=True)
                     if all_grid is not None:
                         sn_all = f"{series} GEN ALL"[:31]
@@ -242,7 +237,6 @@ if uploaded_file:
                         get_bracket_summary(s_df, c_map, s_subs).to_excel(writer, sheet_name=sn_all, startrow=len(all_grid)+2, index=False)
                         apply_styles(writer.sheets[sn_all], threshold)
                     
-                    # Section-wise reports remain as they are
                     sections = sorted(s_df[c_map['batch']].unique())
                     for sec in sections:
                         sec_df = s_df[s_df[c_map['batch']] == sec]
